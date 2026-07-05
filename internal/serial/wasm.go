@@ -5,6 +5,7 @@ package serial
 import (
 	"fmt"
 	"io"
+	"strings"
 	"syscall/js"
 	"time"
 )
@@ -126,11 +127,22 @@ func Open(port js.Value, baud int) (*Transport, error) {
 		"parity":   "none",
 	}
 	consoleLog("debug", "t57: calling port.open(%v)", opts)
+	online := js.Global().Get("navigator").Get("onLine")
+	consoleLog("debug", "t57: browser online=%v", online)
 
 	openPromise := port.Call("open", opts)
 	result, err := awaitTimeout(openPromise, 8*time.Second)
 	if err != nil {
 		consoleLog("error", "t57: port.open rejected: %v", err)
+		// Check if the port was already open (e.g. from a prior
+		// attempt in this session that wasn't properly closed).
+		if t, ok := err.(interface{ String() string }); ok {
+			if strings.Contains(t.String(), "open") {
+				consoleLog("warn", "t57: port likely already open, trying to close first")
+				_ = closePort(port)
+				// Don't retry here; let the JS side retry.
+			}
+		}
 		return nil, fmt.Errorf("open port at %d baud: %v", baud, err)
 	}
 	consoleLog("debug", "t57: port.open resolved ok, result=%v", result)
