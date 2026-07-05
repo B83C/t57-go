@@ -6,7 +6,7 @@ import (
 	"io"
 	"testing"
 
-	"github.com/t57/t57-go/internal/mock"
+	"github.com/B83C/t57-go/internal/mock"
 )
 
 func TestMockBasicReadWrite(t *testing.T) {

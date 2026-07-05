@@ -4,8 +4,8 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/t57/t57-go/internal/mock"
-	"github.com/t57/t57-go/internal/t57"
+	"github.com/B83C/t57-go/internal/mock"
+	"github.com/B83C/t57-go/internal/t57"
 )
 
 // helper: build a "AA station length status data... bcc BB" frame

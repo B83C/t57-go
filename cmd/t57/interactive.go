@@ -5,8 +5,8 @@ import (
 	"strings"
 
 	"github.com/charmbracelet/bubbletea"
-	"github.com/t57/t57-go/internal/serial"
-	"github.com/t57/t57-go/internal/t57"
+	"github.com/B83C/t57-go/internal/serial"
+	"github.com/B83C/t57-go/internal/t57"
 )
 
 type model struct {

@@ -1,4 +1,4 @@
-module github.com/t57/t57-go
+module github.com/B83C/t57-go
 
 go 1.25.0
 

@@ -19,8 +19,8 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/t57/t57-go/internal/serial"
-	"github.com/t57/t57-go/internal/t57"
+	"github.com/B83C/t57-go/internal/serial"
+	"github.com/B83C/t57-go/internal/t57"
 )
 
 //go:embed web/index.html web/dist/t57.wasm web/dist/wasm_exec.js

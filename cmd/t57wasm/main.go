@@ -15,8 +15,8 @@ import (
 	"fmt"
 	"syscall/js"
 
-	"github.com/t57/t57-go/internal/serial"
-	"github.com/t57/t57-go/internal/t57"
+	"github.com/B83C/t57-go/internal/serial"
+	"github.com/B83C/t57-go/internal/t57"
 )
 
 // Global state kept across JS calls.
@@ -131,16 +131,12 @@ func main() {
 		}, nil
 	}))
 
-	// t57Connect is deprecated — the port picker must be called from
-	// JS to preserve the user gesture.  Use t57ConnectPort instead.
+	// t57Connect is deprecated.
 	js.Global().Set("t57Connect", safe(func(this js.Value, args []js.Value) (interface{}, error) {
 		return nil, fmt.Errorf("use t57ConnectPort (call navigator.serial.requestPort() from JS first)")
 	}))
 
-	js.Global().Set("t57ConnectPort", safe(func(this js.Value, args []js.Value) (interface{}, error) {
-		// Called when JS already has a port (e.g. from getPorts + manual open).
-		return nil, fmt.Errorf("not implemented — use t57Connect which shows the picker")
-	}))
+
 
 	js.Global().Set("t57Disconnect", safe(func(this js.Value, args []js.Value) (interface{}, error) {
 		if tr != nil {
