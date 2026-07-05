@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/charmbracelet/bubbletea"
 	"github.com/B83C/t57-go/internal/serial"
@@ -67,16 +68,39 @@ func runTUI(c *args) error {
 
 func connectCmd(a *args) tea.Cmd {
 	return func() tea.Msg {
-		cli, err := openClient(a)
-		if err != nil {
-			return connectMsg{err: err}
+		// Timeout the whole connect attempt after 12s so the user
+		// isn't stuck forever if no device is found.
+		type result struct {
+			cli *t57.Client
+			err error
+			sn  string
+			fw  string
 		}
-		sn, _ := cli.SerialNumber()
-		ver, _ := cli.FirmwareVersion()
-		return connectMsg{
-			client: cli,
-			sn:     fmt.Sprintf("%X", sn),
-			fw:     strings.TrimRight(string(ver), "\x00 "),
+		ch := make(chan result, 1)
+		go func() {
+			cli, err := openClient(a)
+			if err != nil {
+				ch <- result{err: err}
+				return
+			}
+			sn, _ := cli.SerialNumber()
+			ver, _ := cli.FirmwareVersion()
+			ch <- result{
+				cli: cli,
+				sn:  fmt.Sprintf("%X", sn),
+				fw:  strings.TrimRight(string(ver), "\x00 "),
+			}
+		}()
+		select {
+		case r := <-ch:
+			return connectMsg{
+				client: r.cli,
+				sn:     r.sn,
+				fw:     r.fw,
+				err:    r.err,
+			}
+		case <-time.After(12 * time.Second):
+			return connectMsg{err: fmt.Errorf("connect timed out after 12s")}
 		}
 	}
 }
@@ -157,6 +181,14 @@ func (m model) Init() tea.Cmd {
 }
 
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	// Allow quitting at ANY point, even while connecting.
+	if keyMsg, ok := msg.(tea.KeyMsg); ok {
+		if keyMsg.String() == "q" || keyMsg.String() == "ctrl+c" {
+			m.quitting = true
+			return m, tea.Quit
+		}
+	}
+
 	switch msg := msg.(type) {
 	case connectMsg:
 		if msg.err != nil {
@@ -201,9 +233,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		s := msg.String()
 		switch s {
-		case "q", "ctrl+c":
-			m.quitting = true
-			return m, tea.Quit
+
 		case "r":
 			m.status = "Reading…"
 			return m, readAllCmd(&m)
