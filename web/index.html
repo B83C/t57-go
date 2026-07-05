@@ -293,22 +293,33 @@ function doConnect() {
     return;
   }
   const baud = parseInt(document.getElementById("baudSelect").value);
-  console.debug("t57: requestPort from JS (user gesture preserved)");
+  const maxRetries = 5;
+  const retryDelay = 2000; // ms
+
+  console.debug("t57: requestPort from JS");
   navigator.serial.requestPort()
-    .then(port => {
-      console.debug("t57: port selected, opening at", baud, "baud");
-      log(`Opening port at ${baud} baud…`, "t");
-      const raw = t57ConnectPort(port, baud);
-      const result = raw.ok || raw;
-      if (result && result.success) {
-        connected = true;
-        render();
-        console.debug("t57: connected, serial:", result.serial);
-        log(`Connected at ${result.baud} baud. SN: ${result.serial}`, "ok");
-      } else {
+    .then(async (port) => {
+      for (let attempt = 1; attempt <= maxRetries; attempt++) {
+        log(`Opening port (attempt ${attempt}/${maxRetries})…`, "t");
+        console.debug("t57: attempt", attempt, "at", baud, "baud");
+        const raw = t57ConnectPort(port, baud);
+        const result = raw.ok || raw;
+        if (result && result.success) {
+          connected = true;
+          render();
+          console.debug("t57: connected, serial:", result.serial);
+          log(`Connected at ${result.baud} baud. SN: ${result.serial}`, "ok");
+          return;
+        }
         const err = result ? result.error : (raw.error || "unknown");
-        console.error("t57: connect failed:", err);
-        log("Connect: " + err, "er");
+        console.debug("t57: attempt", attempt, "failed:", err);
+        if (attempt < maxRetries) {
+          log(`  — ${err}, retrying in ${retryDelay/1000}s…`, "t");
+          await new Promise(r => setTimeout(r, retryDelay));
+        } else {
+          log(`Connect failed after ${maxRetries} attempts: ${err}`, "er");
+          console.error("t57: all attempts failed:", err);
+        }
       }
     })
     .catch(err => {

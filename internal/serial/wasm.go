@@ -119,34 +119,54 @@ func Open(port js.Value, baud int) (*Transport, error) {
 	if !port.Truthy() {
 		return nil, fmt.Errorf("no port selected")
 	}
-	openPromise := port.Call("open", map[string]interface{}{
+	opts := map[string]interface{}{
 		"baudRate": baud,
-	})
-	if _, err := awaitTimeout(openPromise, 5*time.Second); err != nil {
+		"dataBits": 8,
+		"stopBits": 1,
+		"parity":   "none",
+	}
+	consoleLog("debug", "t57: calling port.open(%v)", opts)
+
+	openPromise := port.Call("open", opts)
+	result, err := awaitTimeout(openPromise, 8*time.Second)
+	if err != nil {
+		consoleLog("error", "t57: port.open rejected: %v", err)
 		return nil, fmt.Errorf("open port at %d baud: %v", baud, err)
 	}
+	consoleLog("debug", "t57: port.open resolved ok, result=%v", result)
 
-	// The ReadableStream / WritableStream must be available right
-	// after open().  If not, close the port and bail out.
 	readable := port.Get("readable")
 	if !readable.Truthy() {
+		consoleLog("error", "t57: readable stream not available")
 		_ = closePort(port)
-		return nil, fmt.Errorf("readable stream not available after open")
+		return nil, fmt.Errorf("readable stream not available")
 	}
 	writable := port.Get("writable")
 	if !writable.Truthy() {
+		consoleLog("error", "t57: writable stream not available")
 		_ = closePort(port)
-		return nil, fmt.Errorf("writable stream not available after open")
+		return nil, fmt.Errorf("writable stream not available")
 	}
 
 	reader := readable.Call("getReader")
 	writer := writable.Call("getWriter")
+	consoleLog("debug", "t57: reader and writer acquired")
 
 	return &Transport{
 		port:         port,
 		streamReader: reader,
 		streamWriter: writer,
 	}, nil
+}
+
+// consoleLog calls console.debug or console.error in the browser.
+func consoleLog(level string, format string, args ...interface{}) {
+	console := js.Global().Get("console")
+	if !console.Truthy() {
+		return
+	}
+	msg := fmt.Sprintf(format, args...)
+	console.Call(level, msg)
 }
 
 // closePort closes a SerialPort and returns any error.
