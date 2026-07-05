@@ -50,6 +50,7 @@ func ListPorts() ([]PortInfo, error) {
 type Transport struct {
 	mu   sync.Mutex
 	port goSerial.Port
+	buf  []byte // internal buffer for over-read bytes
 }
 
 // Open opens a serial port at the given path and baud rate with the
@@ -104,17 +105,28 @@ func (t *Transport) WriteAll(p []byte) (int, error) {
 	return written, nil
 }
 
-// Read implements t57.Transport.
+// Read implements t57.Transport.  Returns buffered bytes first if any,
+// then reads from the serial port.
 func (t *Transport) Read(p []byte) (int, error) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
+
+	// Serve from the internal buffer first.
+	if len(t.buf) > 0 {
+		n := copy(p, t.buf)
+		t.buf = t.buf[n:]
+		return n, nil
+	}
+
 	n, err := t.port.Read(p)
 	if err != nil {
-		// goSerial returns an error on timeout but may have partial data.
 		if n > 0 {
+			// Partial data — stash overflow.
+			if n < len(p) {
+				return n, nil
+			}
 			return n, nil
 		}
-		// Map platform-specific timeouts to a stable sentinel.
 		if isTimeout(err) {
 			return 0, io.EOF
 		}
@@ -123,32 +135,69 @@ func (t *Transport) Read(p []byte) (int, error) {
 	return n, nil
 }
 
+// ReadBuffered reads from the port into an internal buffer and returns
+// the first `want` bytes.  Excess bytes are kept for the next call.
+// This lets ReadFrame read in chunks without losing bytes past ETX.
+func (t *Transport) ReadBuffered(want int) ([]byte, error) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	// First serve from the existing buffer.
+	if len(t.buf) >= want {
+		out := t.buf[:want]
+		t.buf = t.buf[want:]
+		return out, nil
+	}
+
+	// Need more bytes — read a chunk from the port.
+	chunk := make([]byte, 256)
+	n, err := t.port.Read(chunk)
+	if err != nil {
+		if n == 0 {
+			if isTimeout(err) && len(t.buf) > 0 {
+				// Return what we have.
+				out := t.buf
+				t.buf = nil
+				return out, nil
+			}
+			return nil, err
+		}
+	}
+	t.buf = append(t.buf, chunk[:n]...)
+	if len(t.buf) >= want {
+		out := t.buf[:want]
+		t.buf = t.buf[want:]
+		return out, nil
+	}
+	// Not enough bytes yet — return what we have.
+	out := t.buf
+	t.buf = nil
+	return out, nil
+}
+
 // Flush implements t57.Transport.
 func (t *Transport) Flush() error {
 	// goSerial's Port has no explicit Flush; writes are immediate.
 	return nil
 }
 
-// Drain implements t57.Transport.  Temporarily sets the read timeout
-// to 1ms and reads whatever is available, discarding it.
+// Drain implements t57.Transport.  Reads and discards any bytes that
+// have already been buffered, with a short timeout.
 func (t *Transport) Drain() error {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	if t.port == nil {
 		return nil
 	}
-	// Save the current timeout and temporarily set it very short.
-	// We can't get the old timeout, so we just set 1ms and restore
-	// the default 500ms.  This is lossy but adequate for draining.
+	// Save timeout and set very short for a single non-blocking read.
+	old := DefaultReadTimeout
 	_ = t.port.SetReadTimeout(1 * time.Millisecond)
-	buf := make([]byte, 256)
-	for i := 0; i < 10; i++ {
-		_, err := t.port.Read(buf)
-		if err != nil {
-			break
-		}
+	buf := make([]byte, 64)
+	_, err := t.port.Read(buf)
+	if err != nil {
+		// Nothing to drain — expected.
 	}
-	return t.port.SetReadTimeout(DefaultReadTimeout)
+	return t.port.SetReadTimeout(old)
 }
 
 // Close implements t57.Transport.

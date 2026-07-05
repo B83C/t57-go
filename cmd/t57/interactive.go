@@ -2,6 +2,8 @@ package main
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/charmbracelet/bubbletea"
@@ -85,7 +87,7 @@ func readAllCmd(m *model) tea.Cmd {
 		if err != nil {
 			return readDoneMsg{err: err}
 		}
-		blks, err := m.client.ReadBlocks(1, 6)
+		blks, err := m.client.ReadBlocks(1, 7)
 		if err != nil {
 			return readDoneMsg{err: err}
 		}
@@ -95,6 +97,27 @@ func readAllCmd(m *model) tea.Cmd {
 			out[i+1] = b
 		}
 		return readDoneMsg{blocks: out}
+	}
+}
+
+func writeAllCmd(m *model) tea.Cmd {
+	return func() tea.Msg {
+		// Write all 8 blocks (config + user) to the device.
+		for bi := 0; bi < 8; bi++ {
+			if bi == 0 {
+				if err := m.client.WriteConfig(t57.ConfigFromLEBytes(m.blocks[0])); err != nil {
+					return writeDoneMsg{err: fmt.Errorf("config: %w", err)}
+				}
+			} else {
+				if err := m.client.WriteBlock(uint8(bi), m.blocks[bi]); err != nil {
+					return writeDoneMsg{err: fmt.Errorf("block %d: %w", bi, err)}
+				}
+			}
+		}
+		for i := range m.changed {
+			m.changed[i] = false
+		}
+		return writeDoneMsg{n: 8}
 	}
 }
 
@@ -201,10 +224,37 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		case "u":
 			return m, readAllCmd(&m)
-		case "d", "D":
+		case "d":
 			m.blocks[0] = t57.FactoryDefault().LEBytes()
 			m.changed[0] = true
-			m.status = "Config set to factory default (write to apply)"
+			m.status = "Config set to factory default (press w to write)"
+			return m, nil
+		case "D":
+			if !m.connected {
+				m.status = "Not connected"
+				return m, nil
+			}
+			m.status = "Writing all 8 blocks…"
+			return m, writeAllCmd(&m)
+		case "s":
+			if err := saveSnapshot(m.blocks); err != nil {
+				m.status = "Save: " + err.Error()
+			} else {
+				m.status = "Snapshot saved"
+			}
+			return m, nil
+		case "S":
+			blocks, err := loadSnapshot()
+			if err != nil {
+				m.status = "Load: " + err.Error()
+			} else {
+				m.blocks = blocks
+				for i := range m.changed {
+					m.changed[i] = false
+				}
+				m.pending = false
+				m.status = "Snapshot loaded"
+			}
 			return m, nil
 		case "up", "k":
 			if m.curB > 0 {
@@ -321,6 +371,49 @@ func (m model) View() string {
 	b.WriteString("  [R]ead  [W]rite  [D]efault config  [U]ndo  [Q]uit\n")
 	b.WriteString(fmt.Sprintf("  %s\n", m.status))
 	return b.String()
+}
+
+func saveSnapshot(blocks [8][4]byte) error {
+	path, err := snapshotPath()
+	if err != nil {
+		return err
+	}
+	data := make([]byte, 32)
+	for bi := 0; bi < 8; bi++ {
+		copy(data[bi*4:], blocks[bi][:])
+	}
+	return os.WriteFile(path, data, 0644)
+}
+
+func loadSnapshot() ([8][4]byte, error) {
+	var out [8][4]byte
+	path, err := snapshotPath()
+	if err != nil {
+		return out, err
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return out, err
+	}
+	if len(data) != 32 {
+		return out, fmt.Errorf("snapshot file: expected 32 bytes, got %d", len(data))
+	}
+	for bi := 0; bi < 8; bi++ {
+		copy(out[bi][:], data[bi*4:bi*4+4])
+	}
+	return out, nil
+}
+
+func snapshotPath() (string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", err
+	}
+	dir := filepath.Join(home, ".local", "share", "t57")
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return "", err
+	}
+	return filepath.Join(dir, "snapshot.bin"), nil
 }
 
 func hexVal(b byte) int {

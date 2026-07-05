@@ -55,9 +55,8 @@ func ReadFull(t Transport, p []byte, min int) (int, error) {
 	return total, nil
 }
 
-// ReadFrame reads bytes from the transport until it sees an ETX (0xBB)
-// marker or the buffer fills. Returns the number of bytes written to
-// the buffer.
+// ReadFrame reads bytes until it sees an ETX (0xBB) marker or the
+// buffer fills. Returns the number of bytes written to buf.
 func ReadFrame(t Transport, buf []byte) (int, error) {
 	total := 0
 	for total < len(buf) {
@@ -69,11 +68,7 @@ func ReadFrame(t Transport, buf []byte) (int, error) {
 			}
 			continue
 		}
-		// n == 0: either EOF or timeout.
 		if err == nil || err == io.EOF {
-			// Clean end-of-stream. If we got at least one byte,
-			// hand back what we have. Otherwise, treat as a
-			// frame-too-short.
 			if total == 0 {
 				return 0, makeErr("read_frame", "frame_too_short",
 					ErrFrameTooShort,

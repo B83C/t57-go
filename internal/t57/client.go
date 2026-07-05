@@ -90,12 +90,6 @@ func (c *Client) Transact(cmd Command, data []byte) ([]byte, error) {
 }
 
 func (c *Client) transactOnce(cmd Command, data []byte) error {
-	// Drain any leftover bytes from the previous response before
-	// sending the new command.  The device may have sent trailing
-	// bytes after the last ETX, and reading them now prevents them
-	// from being misinterpreted as the start of the next response.
-	c.transport.Drain()
-
 	var tx [MaxData + 5]byte
 	enc, err := Encode(tx[:], c.station, cmd, data)
 	if err != nil {
