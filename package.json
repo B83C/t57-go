@@ -1,0 +1,19 @@
+{
+  "name": "t57-go",
+  "version": "1.0.0",
+  "description": "A robust, cross-platform CLI for the **T57 RFID reader/programmer**, written in Go.",
+  "main": "index.js",
+  "directories": {
+    "doc": "docs"
+  },
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "dependencies": {
+    "playwright": "^1.61.1"
+  }
+}

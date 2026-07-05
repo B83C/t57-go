@@ -1,0 +1,76 @@
+name: CI
+
+on: [push, pull_request]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.24'
+      - run: go test -count=1 -race ./...
+
+  build:
+    strategy:
+      matrix:
+        goos: [linux, darwin, windows]
+        goarch: [amd64, arm64]
+        exclude:
+          - goos: windows
+            goarch: arm64
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.24'
+      - name: Build native CLI
+        run: |
+          GOOS=${{ matrix.goos }} GOARCH=${{ matrix.goarch }} \
+            go build -ldflags="-s -w" \
+            -o "dist/t57-${{ matrix.goos }}-${{ matrix.goarch }}${{ matrix.goos == 'windows' && '.exe' || '' }}" \
+            ./cmd/t57/
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: t57-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: dist/t57-*
+
+  wasm:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.24'
+      - name: Build WASM module
+        run: |
+          GOOS=js GOARCH=wasm go build -ldflags="-s -w" \
+            -o web/dist/t57.wasm ./cmd/t57wasm/
+      - name: Prepare Pages bundle
+        run: |
+          mkdir -p public/dist
+          cp "$(go env GOROOT)/lib/wasm/wasm_exec.js" web/dist/
+          cp web/index.html web/_headers public/
+          cp web/dist/t57.wasm web/dist/wasm_exec.js public/dist/
+      - name: Upload Pages bundle
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: public
+
+  deploy-pages:
+    if: github.ref == 'refs/heads/main'
+    needs: [test, build, wasm]
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4

@@ -1,0 +1,399 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>T57 RFID Hex Editor</title>
+<style>
+  *,*::before,*::after{box-sizing:border-box}
+  body{background:#0d1117;color:#e6edf3;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;margin:0;padding:16px;max-width:640px;margin:0 auto}
+  h1{font-size:1rem;margin:0 0 4px;letter-spacing:.3px}
+  .sub{color:#8b949e;font-size:.8rem;margin-bottom:10px}
+
+  /* connection bar */
+  .conn{display:flex;gap:8px;align-items:center;margin-bottom:12px}
+  .dot{width:8px;height:8px;border-radius:50%;background:#f85149;flex-shrink:0}
+  .dot.on{background:#3fb950}
+  .conn label{color:#8b949e;font-size:.8rem}
+  button{background:#21262d;color:#e6edf3;border:1px solid #30363d;padding:5px 12px;border-radius:6px;cursor:pointer;font-size:.8rem}
+  button:hover{background:#30363d}
+  button:disabled{opacity:.4;cursor:not-allowed}
+  button.primary{background:#238636;border-color:#2ea043}
+  button.primary:hover{background:#2ea043}
+  button.danger{background:#da3633;border-color:#f85149}
+  button.danger:hover{background:#f85149}
+  .btn-group{display:flex;gap:6px;flex-wrap:wrap}
+  .sep{color:#30363d;margin:10px 0;border:none;border-top:1px solid #30363d}
+
+  /* hex grid */
+  .grid{display:flex;flex-direction:column;gap:2px}
+  .row{display:flex;align-items:center;gap:4px;padding:3px 6px;border-radius:4px;transition:background .15s}
+  .row:nth-child(odd){background:#161b22}
+  .row.changed{background:#2a2410;outline:1px solid #d29922}
+  .row.conflict{background:#2d1111;outline:1px solid #f85149}
+  .blk{color:#8b949e;font-size:.75rem;width:100px;flex-shrink:0}
+  .byt{width:30px;height:28px;text-align:center;font-family:"SFMono-Regular",Consolas,monospace;font-size:.8rem;
+    background:#0d1117;color:#e6edf3;border:1px solid #30363d;border-radius:4px;padding:0 2px;text-transform:uppercase}
+  .byt:focus{border-color:#58a6ff;outline:none}
+  .byt.changed{background:#2a2410;border-color:#d29922}
+  .st{font-size:.65rem;color:#484f58;width:36px;text-align:center;flex-shrink:0}
+
+  /* output */
+  .out{background:#0d1117;border:1px solid #30363d;border-radius:6px;padding:8px 10px;margin-top:10px;font-family:monospace;font-size:.8rem;min-height:48px;max-height:200px;overflow-y:auto;white-space:pre-wrap}
+  .out .t{color:#484f58}
+  .out .ok{color:#3fb950}
+  .out .er{color:#f85149}
+
+  .loading{text-align:center;margin-top:48px;color:#8b949e}
+</style>
+</head>
+<body>
+
+<div id="loading" class="loading">Loading T57 WASM module…</div>
+
+<div id="app" style="display:none">
+
+  <h1>T57 RFID — Hex Editor</h1>
+  <div class="sub">Arrow keys/Tab to navigate · Type hex digits to edit · Ctrl+W to write</div>
+
+  <div class="conn">
+    <span class="dot" id="dot"></span>
+    <label id="status">Not connected</label>
+    <select id="baudSelect" style="background:#21262d;color:#e6edf3;border:1px solid #30363d;border-radius:4px;font-size:.8rem;padding:3px 6px">
+      <option value="9600" selected>9600</option>
+      <option value="19200">19200</option>
+      <option value="38400">38400</option>
+      <option value="57600">57600</option>
+      <option value="115200">115200</option>
+    </select>
+    <button id="btnConnect" class="primary">Connect</button>
+    <button id="btnDisconnect" disabled>Disconnect</button>
+  </div>
+
+  <div class="btn-group">
+    <button id="btnReadAll" class="primary" disabled>Read All</button>
+    <button id="btnWriteChanged" class="danger" disabled>Write Changed</button>
+    <button id="btnDefaultConfig" disabled>Default Config</button>
+    <button id="btnReset" disabled>Reset</button>
+  </div>
+
+  <hr class="sep">
+
+  <div class="grid" id="grid"></div>
+
+  <hr class="sep">
+
+  <div class="btn-group">
+    <button id="btnBuzzer" disabled>Beep</button>
+    <button id="btnSerial" disabled>Serial#</button>
+  </div>
+
+  <div class="out" id="out"><span class="t">Ready. Click Connect.</span></div>
+</div>
+
+<script src="dist/wasm_exec.js"></script>
+<script>
+const go = new Go();
+
+WebAssembly.instantiateStreaming(fetch("dist/t57.wasm"), go.importObject)
+  .then(r => { go.run(r.instance); initApp(); })
+  .catch(e => document.getElementById("loading").textContent = "Failed: " + e);
+
+// ========== state ==========
+const lastRead = new Array(8).fill(null);   // hex strings as read from device
+const edited   = new Array(8).fill(null);   // hex strings as currently edited
+const changed  = new Set();                 // set of block indices changed
+let connected = false;
+
+// ========== app ==========
+function initApp() {
+  document.getElementById("loading").style.display = "none";
+  document.getElementById("app").style.display = "block";
+  buildGrid();
+  wireButtons();
+  render();
+}
+
+function buildGrid() {
+  const grid = document.getElementById("grid");
+  for (let b = 0; b < 8; b++) {
+    const label = b === 0 ? "Block 0 (config)" : `Block ${b}`;
+    const row = document.createElement("div");
+    row.className = "row";
+    row.id = "row-" + b;
+
+    const lbl = document.createElement("span");
+    lbl.className = "blk";
+    lbl.textContent = label;
+    row.appendChild(lbl);
+
+    for (let i = 0; i < 4; i++) {
+      const inp = document.createElement("input");
+      inp.className = "byt";
+      inp.id = `byt-${b}-${i}`;
+      inp.maxLength = 2;
+      inp.placeholder = "00";
+      inp.addEventListener("input", () => onByteChange(b));
+      inp.addEventListener("keydown", e => { onByteKey(e, b, i); });
+      row.appendChild(inp);
+    }
+
+    const status = document.createElement("span");
+    status.className = "st";
+    status.id = "st-" + b;
+    status.textContent = "";
+    row.appendChild(status);
+
+    grid.appendChild(row);
+  }
+}
+
+function wireButtons() {
+  document.getElementById("btnConnect").onclick = doConnect;
+  document.getElementById("btnDisconnect").onclick = doDisconnect;
+  document.getElementById("btnReadAll").onclick = doReadAll;
+  document.getElementById("btnWriteChanged").onclick = doWriteChanged;
+  document.getElementById("btnDefaultConfig").onclick = doDefaultConfig;
+  document.getElementById("btnReset").onclick = doReset;
+  document.getElementById("btnBuzzer").onclick = () => call("t57Buzzer(5,1)");
+  document.getElementById("btnSerial").onclick = doSerial;
+}
+
+// Keyboard navigation for the hex input grid.
+function onByteKey(e, block, idx) {
+  if (e.key === "Enter" || e.key === "Tab") {
+    e.preventDefault();
+    const next = (idx + 1) % 4;
+    const nxt = document.getElementById(`byt-${block}-${next}`);
+    if (nxt) nxt.focus();
+  } else if (e.key === "ArrowRight") {
+    e.preventDefault();
+    const nxt = document.getElementById(`byt-${block}-${Math.min(idx+1,3)}`);
+    if (nxt) nxt.focus();
+  } else if (e.key === "ArrowLeft") {
+    e.preventDefault();
+    const nxt = document.getElementById(`byt-${block}-${Math.max(idx-1,0)}`);
+    if (nxt) nxt.focus();
+  } else if (e.key === "ArrowUp") {
+    e.preventDefault();
+    if (block > 0) {
+      const nxt = document.getElementById(`byt-${block-1}-${idx}`);
+      if (nxt) nxt.focus();
+    }
+  } else if (e.key === "ArrowDown") {
+    e.preventDefault();
+    if (block < 7) {
+      const nxt = document.getElementById(`byt-${block+1}-${idx}`);
+      if (nxt) nxt.focus();
+    }
+  } else if (e.key === "Home") {
+    e.preventDefault();
+    const nxt = document.getElementById(`byt-${block}-0`);
+    if (nxt) nxt.focus();
+  } else if (e.key === "End") {
+    e.preventDefault();
+    const nxt = document.getElementById(`byt-${block}-3`);
+    if (nxt) nxt.focus();
+  }
+}
+
+function doDefaultConfig() {
+  const el = document.getElementById("readOut");
+  const hex = "000880E8";
+  setBlockHex(0, hex);
+  changed.add(0);
+  document.getElementById("row-0").classList.add("changed");
+  document.getElementById("st-0").textContent = "CHANGED";
+  render();
+  log("Config set to factory default (" + hex + ") — click Write Changed to apply.", "ok");
+}
+
+function render() {
+  const dot = document.getElementById("dot");
+  const status = document.getElementById("status");
+  dot.className = "dot" + (connected ? " on" : "");
+  status.textContent = connected ? "Connected" : "Not connected";
+  document.getElementById("btnConnect").disabled = connected;
+  document.getElementById("btnDisconnect").disabled = !connected;
+  document.getElementById("btnReadAll").disabled = !connected;
+  document.getElementById("btnWriteChanged").disabled = !connected || changed.size === 0;
+  document.getElementById("btnReset").disabled = !connected;
+  document.getElementById("btnBuzzer").disabled = !connected;
+  document.getElementById("btnSerial").disabled = !connected;
+}
+
+// ========== byte editing ==========
+function onByteChange(block) {
+  const bytes = getBlockBytes(block);
+  const hex = bytes.map(b => b.toString(16).padStart(2, "0").toUpperCase()).join("");
+  edited[block] = hex;
+  // compare to last read
+  if (lastRead[block] !== null && lastRead[block] !== hex) {
+    changed.add(block);
+    document.getElementById("row-" + block).classList.add("changed");
+    document.getElementById("st-" + block).textContent = "CHANGED";
+    // Mark individual changed bytes
+    for (let i = 0; i < 4; i++) {
+      const inp = document.getElementById(`byt-${block}-${i}`);
+      const orig = lastRead[block] ? parseInt(lastRead[block].substr(i*2,2),16) : 0;
+      inp.classList.toggle("changed", bytes[i] !== orig);
+    }
+  } else {
+    changed.delete(block);
+    document.getElementById("row-" + block).classList.remove("changed");
+    document.getElementById("st-" + block).textContent = "";
+    for (let i = 0; i < 4; i++) {
+      document.getElementById(`byt-${block}-${i}`).classList.remove("changed");
+    }
+  }
+  render();
+}
+
+function getBlockBytes(block) {
+  const out = [];
+  for (let i = 0; i < 4; i++) {
+    const inp = document.getElementById(`byt-${block}-${i}`);
+    const v = parseInt(inp.value, 16);
+    out.push(isNaN(v) ? 0 : v);
+  }
+  return out;
+}
+
+function setBlockHex(block, hex) {
+  hex = hex.toUpperCase();
+  for (let i = 0; i < 4; i++) {
+    document.getElementById(`byt-${block}-${i}`).value = hex.substr(i*2,2);
+  }
+  edited[block] = hex;
+}
+
+function setStatus(block, text) {
+  document.getElementById("st-" + block).textContent = text;
+}
+
+// ========== commands ==========
+function call(fn, ...args) {
+  try {
+    return eval(fn)(...args);
+  } catch(e) {
+    return {error: String(e)};
+  }
+}
+
+function log(text, cls) {
+  const out = document.getElementById("out");
+  const d = new Date();
+  out.innerHTML += `<span class="t">[${d.toLocaleTimeString()}]</span> <span class="${cls}">${text}</span>\n`;
+  out.scrollTop = out.scrollHeight;
+}
+
+function doConnect() {
+  if (!navigator.serial) {
+    log("Web Serial API not available. Try Chrome/Edge.", "er");
+    return;
+  }
+  const baud = parseInt(document.getElementById("baudSelect").value);
+  console.debug("t57: requestPort from JS (user gesture preserved)");
+  navigator.serial.requestPort()
+    .then(port => {
+      console.debug("t57: port selected, opening at", baud, "baud");
+      log(`Opening port at ${baud} baud…`, "t");
+      const raw = t57ConnectPort(port, baud);
+      const result = raw.ok || raw;
+      if (result && result.success) {
+        connected = true;
+        render();
+        console.debug("t57: connected, serial:", result.serial);
+        log(`Connected at ${result.baud} baud. SN: ${result.serial}`, "ok");
+      } else {
+        const err = result ? result.error : (raw.error || "unknown");
+        console.error("t57: connect failed:", err);
+        log("Connect: " + err, "er");
+      }
+    })
+    .catch(err => {
+      console.error("t57: port picker:", err);
+      log("Port picker cancelled: " + err, "er");
+    });
+}
+
+function doDisconnect() {
+  t57Disconnect();
+  connected = false;
+  lastRead.fill(null); edited.fill(null); changed.clear();
+  for (let b = 0; b < 8; b++) {
+    document.getElementById("row-" + b).className = "row";
+    document.getElementById("st-" + b).textContent = "";
+    for (let i = 0; i < 4; i++) document.getElementById(`byt-${b}-${i}`).className = "byt";
+  }
+  render();
+  log("Disconnected.", "er");
+}
+
+function doReadAll() {
+  log("Reading all blocks…", "t");
+  const r = t57ReadAll();
+  if (r.error) { log("ReadAll: " + r.error, "er"); return; }
+  for (const blk of r) {
+    const b = blk.block;
+    setBlockHex(b, blk.hex);
+    lastRead[b] = blk.hex;
+    edited[b] = blk.hex;
+    changed.delete(b);
+    document.getElementById("row-" + b).classList.remove("changed");
+    document.getElementById("st-" + b).textContent = "✓";
+    for (let i = 0; i < 4; i++) document.getElementById(`byt-${b}-${i}`).classList.remove("changed");
+  }
+  render();
+  log("Read 8 blocks.", "ok");
+}
+
+function doWriteChanged() {
+  if (changed.size === 0) { log("Nothing changed.", "t"); return; }
+  const blocks = [...changed].join(",");
+  if (!confirm(`Write ${changed.size} changed block(s) (${blocks})?`)) {
+    log("Write cancelled.", "t");
+    return;
+  }
+  const toWrite = [];
+  for (const b of changed) {
+    toWrite.push({block: b, hex: edited[b]});
+  }
+  log(`Writing ${toWrite.length} block(s): ${blocks} …`, "t");
+  const r = t57WriteBlocks(toWrite);
+  if (r.error) { log("Write: " + r.error, "er"); return; }
+  for (const w of toWrite) lastRead[w.block] = w.hex;
+  changed.clear();
+  for (const b of toWrite) {
+    document.getElementById("row-" + b).classList.remove("changed");
+    document.getElementById("st-" + b).textContent = "✓";
+    for (let i = 0; i < 4; i++) document.getElementById(`byt-${b}-${i}`).classList.remove("changed");
+  }
+  render();
+  log(r, "ok");
+}
+
+function doReset() {
+  for (let b = 0; b < 8; b++) {
+    for (let i = 0; i < 4; i++) document.getElementById(`byt-${b}-${i}`).value = "";
+    edited[b] = null;
+    lastRead[b] = null;
+  }
+  changed.clear();
+  for (let b = 0; b < 8; b++) {
+    document.getElementById("row-" + b).className = "row";
+    document.getElementById("st-" + b).textContent = "";
+    for (let i = 0; i < 4; i++) document.getElementById(`byt-${b}-${i}`).className = "byt";
+  }
+  render();
+  log("Editor cleared.", "t");
+}
+
+function doSerial() {
+  const r = t57SerialNumber();
+  if (r.error) { log("Serial: " + r.error, "er"); return; }
+  log("SN: " + r, "ok");
+}
+</script>
+</body>
+</html>
