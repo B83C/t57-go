@@ -86,7 +86,7 @@ func readAllCmd(m *model) tea.Cmd {
 		if err != nil {
 			return readDoneMsg{err: err}
 		}
-		blks, err := m.client.ReadBlocks(1, 7)
+		blks, err := m.client.ReadBlocks(1, 6)
 		if err != nil {
 			return readDoneMsg{err: err}
 		}
@@ -127,6 +127,7 @@ func writeChangedCmd(m *model) tea.Cmd {
 }
 
 func (m model) Init() tea.Cmd {
+	// Connect but don't read anything.  User presses 'r' to read.
 	if globalArgs != nil {
 		return connectCmd(globalArgs)
 	}
@@ -145,8 +146,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.sn = msg.sn
 		m.fw = msg.fw
 		m.connected = true
-		m.status = "Connected"
-		return m, readAllCmd(&m)
+		m.status = "Connected — press R to read blocks"
 
 	case readDoneMsg:
 		if msg.err != nil {

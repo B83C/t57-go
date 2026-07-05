@@ -1,0 +1,132 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>T57 Live Monitor</title>
+<style>
+  body{background:#0d1117;color:#e6edf3;font-family:monospace;margin:0;padding:16px;max-width:800px;margin:0 auto}
+  h1{font-size:1rem;margin:0 0 4px}
+  .conn{display:flex;gap:8px;align-items:center;margin-bottom:8px}
+  .dot{width:8px;height:8px;border-radius:50%;background:#f85149;flex-shrink:0}
+  .dot.on{background:#3fb950}
+  .dot.poll{background:#d29922}
+  .info{color:#8b949e;font-size:.8rem;margin:4px 0}
+  button{background:#21262d;color:#e6edf3;border:1px solid #30363d;padding:4px 10px;border-radius:4px;cursor:pointer;font-size:.8rem}
+  button:hover{background:#30363d}
+  button.primary{background:#238636;border-color:#2ea043}
+  button.danger{background:#da3633;border-color:#f85149}
+  pre{margin:0;font-size:.9rem;line-height:1.6}
+  .ok{color:#3fb950}
+  .er{color:#f85149}
+  .time{color:#484f58;font-size:.75rem}
+  #log{max-height:300px;overflow-y:auto;background:#161b22;border:1px solid #30363d;border-radius:4px;padding:8px;margin-top:8px;font-size:.8rem}
+</style>
+</head>
+<body>
+<h1>T57 Live Monitor</h1>
+<div class="conn">
+  <span class="dot" id="dot"></span>
+  <span id="status">Disconnected</span>
+  <select id="baud" style="background:#21262d;color:#e6edf3;border:1px solid #30363d;border-radius:4px;font-size:.8rem;padding:2px 6px">
+    <option value="9600" selected>9600</option>
+    <option value="19200">19200</option>
+    <option value="38400">38400</option>
+    <option value="57600">57600</option>
+    <option value="115200">115200</option>
+  </select>
+  <button id="btnConnect" class="primary">Connect</button>
+  <button id="btnDisconnect" disabled>Disconnect</button>
+</div>
+<div class="info" id="deviceInfo"></div>
+<pre id="display">Waiting for connection…</pre>
+<div id="log"></div>
+
+<script src="dist/wasm_exec.js"></script>
+<script>
+const go = new Go();
+WebAssembly.instantiateStreaming(fetch("dist/t57.wasm"), go.importObject)
+  .then(r => { go.run(r.instance); init(); })
+  .catch(e => document.body.innerHTML = "Failed: " + e);
+
+let port = null, running = false, pollTimer = null;
+const $ = id => document.getElementById(id);
+const log = (msg, cls) => {
+  const el = $("log");
+  const t = new Date().toLocaleTimeString();
+  el.innerHTML += `<span class="time">[${t}]</span> <span class="${cls}">${msg}</span>\n`;
+  el.scrollTop = el.scrollHeight;
+};
+
+function init() {
+  if (!navigator.serial) { $("status").textContent = "Web Serial not available"; return; }
+  $("btnConnect").onclick = doConnect;
+  $("btnDisconnect").onclick = doDisconnect;
+}
+
+async function doConnect() {
+  const baud = parseInt($("baud").value);
+  try {
+    port = await navigator.serial.requestPort();
+  } catch(e) { log("Picker cancelled: " + e, "er"); return; }
+  log("Port selected. Probing baud rates…", "t");
+  const r = t57ConnectPort(port, baud);
+  const result = r.ok || r;
+  if (!result || !result.success) {
+    log("Connect failed: " + (r.error || "no response"), "er");
+    port = null; return;
+  }
+  $("dot").className = "dot on";
+  $("status").textContent = `Connected at ${result.baud} baud`;
+  $("deviceInfo").textContent = `SN: ${result.serial}`;
+  log(`Connected at ${result.baud} baud, serial ${result.serial}`, "ok");
+  running = true;
+  $("btnConnect").disabled = true;
+  $("btnDisconnect").disabled = false;
+  poll();
+}
+
+function doDisconnect() {
+  running = false;
+  if (pollTimer) clearTimeout(pollTimer);
+  t57Disconnect();
+  port = null;
+  $("dot").className = "dot";
+  $("status").textContent = "Disconnected";
+  $("deviceInfo").textContent = "";
+  $("display").textContent = "Disconnected.";
+  $("btnConnect").disabled = false;
+  $("btnDisconnect").disabled = true;
+  log("Disconnected.", "er");
+}
+
+function poll() {
+  if (!running) return;
+  $("dot").className = "dot poll";
+  // Read config + block 1 — simplest possible test.
+  let configHex = "", block1Hex = "";
+  const rc = t57ReadConfig();
+  const r1 = t57ReadBlock(1);
+  $("dot").className = "dot on";
+  const cfg = rc.ok || rc;
+  const blk = r1.ok || r1;
+  if (!cfg) { log("Read config: " + (rc.error || "fail"), "er"); schedule(); return; }
+  if (!blk) { log("Read block 1: " + (r1.error || "fail"), "er"); schedule(); return; }
+  $("display").textContent =
+    `Config   ${formatHex(cfg.hex)}\n` +
+    `Block 1  ${formatHex(blk.hex)}`;
+  schedule();
+}
+
+function schedule() {
+  pollTimer = setTimeout(poll, 1000);
+}
+
+function formatHex(s) {
+  const bytes = [];
+  for (let i = 0; i < s.length; i += 2) bytes.push(s.substr(i,2));
+  return "[" + bytes.join("] [") + "]";
+}
+</script>
+</body>
+</html>
