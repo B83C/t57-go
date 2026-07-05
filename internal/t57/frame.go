@@ -6,6 +6,16 @@ type EncodedFrame struct {
 	Len int
 }
 
+// Debug logging hook. Set to non-nil to receive hex dumps of every
+// frame encode/decode.
+var DebugLog func(msg string, args ...interface{})
+
+func debugf(msg string, args ...interface{}) {
+	if DebugLog != nil {
+		DebugLog(msg, args...)
+	}
+}
+
 // Encode writes a frame into `buf` and returns the number of bytes
 // used. The frame layout is:
 //
@@ -43,6 +53,8 @@ func Encode(buf []byte, station byte, cmd Command, data []byte) (EncodedFrame, e
 	buf[4+dataLen] = bcc
 	buf[5+dataLen] = ETX
 
+	debugf("encode station=0x%02X cmd=0x%02X data=[% X] → [% X]",
+		station, cmd, data, buf[:total])
 	return EncodedFrame{Len: total}, nil
 }
 
@@ -109,6 +121,9 @@ func Decode(buf []byte) (Decoded, error) {
 		return Decoded{}, makeErr("decode", "length_mismatch", ErrLengthMismatch,
 			map[string]any{"declared": declared, "actual": dataLen})
 	}
+
+	debugf("decode status=0x%02X data=[% X] (length=%d bccPos=%d n=%d)",
+		buf[3], buf[4:4+dataLen], length, bccPos, len(buf))
 
 	return Decoded{
 		Station: buf[1],

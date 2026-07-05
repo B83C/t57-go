@@ -66,7 +66,19 @@ func mustClient() (*t57.Client, error) {
 	return client, nil
 }
 
+func debugLog(msg string, args ...interface{}) {
+	c := js.Global().Get("console")
+	if c.Truthy() {
+		c.Call("debug", fmt.Sprintf("t57.frame: "+msg, args...))
+	}
+}
+
 func main() {
+	// Wire frame-level debug logging to the browser console.
+	t57.DebugLog = func(msg string, args ...interface{}) {
+		debugLog(msg, args...)
+	}
+
 	js.Global().Set("t57Init", safe(func(this js.Value, args []js.Value) (interface{}, error) {
 		if err := serial.CheckAvailable(); err != nil {
 			return nil, err

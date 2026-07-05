@@ -188,16 +188,35 @@ func closePort(port js.Value) error {
 	return err
 }
 
+// hexStr formats a byte slice as space-separated uppercase hex.
+func hexStr(p []byte) string {
+	if len(p) == 0 {
+		return ""
+	}
+	b := make([]byte, len(p)*3-1)
+	for i, v := range p {
+		if i > 0 {
+			b[i*3-1] = ' '
+		}
+		b[i*3] = "0123456789ABCDEF"[v>>4]
+		b[i*3+1] = "0123456789ABCDEF"[v&0x0F]
+	}
+	return string(b)
+}
+
 // WriteAll implements t57.Transport.
 func (t *Transport) WriteAll(p []byte) (int, error) {
 	if !t.streamWriter.Truthy() {
 		return 0, fmt.Errorf("not connected")
 	}
+	consoleLog("debug", "t57: tx (%d bytes): [%s]", len(p), hexStr(p))
+
 	jsBuf := js.Global().Get("Uint8Array").New(len(p))
 	js.CopyBytesToJS(jsBuf, p)
 
 	writePromise := t.streamWriter.Call("write", jsBuf)
 	if _, err := await(writePromise); err != nil {
+		consoleLog("error", "t57: write failed: %v", err)
 		return 0, fmt.Errorf("write: %v", err)
 	}
 	return len(p), nil
@@ -212,14 +231,15 @@ func (t *Transport) Read(p []byte) (int, error) {
 	readPromise := t.streamReader.Call("read")
 	result, err := await(readPromise)
 	if err != nil {
+		consoleLog("error", "t57: read error: %v", err)
 		return 0, fmt.Errorf("read: %v", err)
 	}
 	if result.Get("done").Bool() {
+		consoleLog("debug", "t57: rx done (stream closed)")
 		return 0, io.EOF
 	}
 	value := result.Get("value")
 	if !value.Truthy() {
-		// Empty chunk — ask again, same as a zero-byte buffer.
 		return 0, nil
 	}
 	n := value.Get("length").Int()
@@ -230,6 +250,7 @@ func (t *Transport) Read(p []byte) (int, error) {
 	goBuf := make([]byte, n)
 	js.CopyBytesToGo(goBuf, jsBuf)
 	copy(p, goBuf)
+	consoleLog("debug", "t57: rx (%d bytes): [%s]", n, hexStr(p[:n]))
 	return n, nil
 }
 
