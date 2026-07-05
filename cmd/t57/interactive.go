@@ -57,7 +57,7 @@ type writeDoneMsg struct {
 func initialModel(c *args) model {
 	return model{
 		status:     "Scanning...",
-		maxRetries: 20, // try up to 20 times before giving up
+		maxRetries: -1, // negative = infinite
 	}
 }
 
@@ -214,11 +214,15 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.err != nil {
 			m.retryCount++
 			m.err = msg.err
-			if m.retryCount >= m.maxRetries {
+			if m.maxRetries >= 0 && m.retryCount >= m.maxRetries {
 				m.status = fmt.Sprintf("Gave up after %d attempts: %v", m.retryCount, msg.err)
 				return m, tea.Quit
 			}
-			m.status = fmt.Sprintf("Scanning (attempt %d/%d)...", m.retryCount+1, m.maxRetries)
+			label := fmt.Sprintf("attempt %d", m.retryCount+1)
+			if m.maxRetries > 0 {
+				label = fmt.Sprintf("attempt %d/%d", m.retryCount+1, m.maxRetries)
+			}
+			m.status = fmt.Sprintf("Scanning (%s)...", label)
 			return m, tea.Tick(2*time.Second, func(t time.Time) tea.Msg {
 				return retryTickMsg(t)
 			})
@@ -385,8 +389,12 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m model) View() string {
-	if !m.connected && m.err != nil && m.retryCount < m.maxRetries {
-		return fmt.Sprintf("Scanning... (attempt %d/%d)\n", m.retryCount+1, m.maxRetries)
+	if !m.connected && m.err != nil && (m.maxRetries < 0 || m.retryCount < m.maxRetries) {
+		label := fmt.Sprintf("attempt %d", m.retryCount+1)
+		if m.maxRetries > 0 {
+			label = fmt.Sprintf("attempt %d/%d", m.retryCount+1, m.maxRetries)
+		}
+		return fmt.Sprintf("Scanning (%s)...\nPress q to quit\n", label)
 	}
 	if !m.connected && m.err != nil {
 		return fmt.Sprintf("Gave up: %v\n", m.err)
