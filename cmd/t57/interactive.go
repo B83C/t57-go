@@ -48,7 +48,6 @@ type writeDoneMsg struct {
 
 func initialModel(c *args) model {
 	return model{
-		err:    fmt.Errorf("connecting…"),
 		status: "Connecting…",
 	}
 }
@@ -279,8 +278,11 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m model) View() string {
+	if !m.connected && m.err != nil && m.status == "Connecting…" {
+		return "Connecting…\n"
+	}
 	if !m.connected && m.err != nil {
-		return fmt.Sprintf("Error: %v\n", m.err)
+		return fmt.Sprintf("Connect failed: %v\n", m.err)
 	}
 	var b strings.Builder
 	b.WriteString("\n  T57 RFID — Hex Editor\n")

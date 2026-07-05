@@ -236,8 +236,6 @@ func autoDetect(c *args) (*t57.Client, error) {
 		return nil, fmt.Errorf("no serial ports found")
 	}
 
-	// Baud rates to probe, in the same order the Zig code implies:
-	// try the configured baud first, then fall through the spec list.
 	bauds := []int{c.Baud}
 	for _, r := range []int{9600, 19200, 38400, 57600, 115200} {
 		if r != c.Baud {
@@ -245,39 +243,63 @@ func autoDetect(c *args) (*t57.Client, error) {
 		}
 	}
 
-	var lastErr error
+	type probeResult struct {
+		client *t57.Client
+		err    error
+		port   string
+		baud   int
+	}
+	results := make(chan probeResult, len(ports))
+
+	// Probe all ports in parallel.  Each port tries baud rates
+	// sequentially until one works or all fail.
 	for _, p := range ports {
-		if c.Verbose {
-			fmt.Fprintf(os.Stderr, "probing %s ...\n", p.Name)
-		}
-		for _, baud := range bauds {
-			tr, err := serial.OpenWithTimeout(p.Name, baud, 300*time.Millisecond)
-			if err != nil {
-				if c.Verbose {
-					fmt.Fprintf(os.Stderr, "  %s @ %d: open failed: %v\n", p.Name, baud, err)
-				}
-				lastErr = err
-				continue
-			}
-			client := t57.NewClient(tr).WithRetries(0)
-			sn, err := client.SerialNumber()
-			if err == nil {
-				if c.Verbose {
-					fmt.Fprintf(os.Stderr, "  ✓ %s @ %d baud, serial=%X\n", p.Name, baud, sn)
-				}
-				return client.WithRetries(c.Retries), nil
-			}
-			tr.Close()
+		p := p
+		go func() {
 			if c.Verbose {
-				fmt.Fprintf(os.Stderr, "  — %s @ %d baud: %v\n", p.Name, baud, err)
+				fmt.Fprintf(os.Stderr, "probing %s ...\n", p.Name)
 			}
-			lastErr = err
+			for _, baud := range bauds {
+				tr, err := serial.OpenWithTimeout(p.Name, baud, 300*time.Millisecond)
+				if err != nil {
+					if c.Verbose {
+						fmt.Fprintf(os.Stderr, "  %s @ %d: open failed: %v\n", p.Name, baud, err)
+					}
+					continue
+				}
+				client := t57.NewClient(tr).WithRetries(0)
+				sn, err := client.SerialNumber()
+				if err == nil {
+					if c.Verbose {
+						fmt.Fprintf(os.Stderr, "  ✓ %s @ %d baud, serial=%X\n", p.Name, baud, sn)
+					}
+					results <- probeResult{client: client.WithRetries(c.Retries), port: p.Name, baud: baud}
+					return
+				}
+				tr.Close()
+				if c.Verbose {
+					fmt.Fprintf(os.Stderr, "  — %s @ %d baud: %v\n", p.Name, baud, err)
+				}
+			}
+			results <- probeResult{err: fmt.Errorf("%s: no T57 at any baud", p.Name)}
+		}()
+	}
+
+	// Collect results, return on first success or last failure.
+	var lastErr error
+	for i := 0; i < len(ports); i++ {
+		r := <-results
+		if r.client != nil {
+			if c.Verbose {
+				fmt.Fprintf(os.Stderr, "auto-detected T57 on %s @ %d baud\n", r.port, r.baud)
+			}
+			// Drain remaining goroutines.
+			go func() { for range results {} }()
+			return r.client, nil
 		}
+		lastErr = r.err
 	}
-	if lastErr != nil {
-		return nil, fmt.Errorf("no T57 device found on %d port(s); last attempt: %v", len(ports), lastErr)
-	}
-	return nil, fmt.Errorf("no T57 device found on %d port(s)", len(ports))
+	return nil, fmt.Errorf("no T57 device found on %d port(s): %v", len(ports), lastErr)
 }
 
 func cmdScanImpl(c *args) error {
