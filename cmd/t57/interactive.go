@@ -31,7 +31,12 @@ type model struct {
 	quitting  bool
 
 	confirmWrite bool // waiting for y/n confirm before writing
+
+	retryCount int // connect attempts so far
+	maxRetries int // stop after this many
 }
+
+type retryTickMsg time.Time
 
 type connectMsg struct {
 	client *t57.Client
@@ -51,7 +56,8 @@ type writeDoneMsg struct {
 
 func initialModel(c *args) model {
 	return model{
-		status: "Connecting…",
+		status:     "Scanning...",
+		maxRetries: 20, // try up to 20 times before giving up
 	}
 }
 
@@ -180,11 +186,15 @@ func writeChangedCmd(m *model) tea.Cmd {
 }
 
 func (m model) Init() tea.Cmd {
-	// Connect but don't read anything.  User presses 'r' to read.
-	if globalArgs != nil {
-		return connectCmd(globalArgs)
+	return m.tryConnect()
+}
+
+func (m model) tryConnect() tea.Cmd {
+	a := globalArgs
+	if a == nil {
+		a = &args{Baud: 9600, Retries: 2}
 	}
-	return connectCmd(&args{Baud: 9600, Retries: 2})
+	return connectCmd(a)
 }
 
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -197,11 +207,21 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 
 	switch msg := msg.(type) {
+	case retryTickMsg:
+		return m, m.tryConnect()
+
 	case connectMsg:
 		if msg.err != nil {
+			m.retryCount++
 			m.err = msg.err
-			m.status = "Connect: " + msg.err.Error()
-			return m, tea.Quit
+			if m.retryCount >= m.maxRetries {
+				m.status = fmt.Sprintf("Gave up after %d attempts: %v", m.retryCount, msg.err)
+				return m, tea.Quit
+			}
+			m.status = fmt.Sprintf("Scanning (attempt %d/%d)...", m.retryCount+1, m.maxRetries)
+			return m, tea.Tick(2*time.Second, func(t time.Time) tea.Msg {
+				return retryTickMsg(t)
+			})
 		}
 		m.client = msg.client
 		m.sn = msg.sn
@@ -365,11 +385,11 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m model) View() string {
-	if !m.connected && m.err != nil && m.status == "Connecting…" {
-		return "Connecting…\n"
+	if !m.connected && m.err != nil && m.retryCount < m.maxRetries {
+		return fmt.Sprintf("Scanning... (attempt %d/%d)\n", m.retryCount+1, m.maxRetries)
 	}
 	if !m.connected && m.err != nil {
-		return fmt.Sprintf("Connect failed: %v\n", m.err)
+		return fmt.Sprintf("Gave up: %v\n", m.err)
 	}
 	var b strings.Builder
 	b.WriteString("\n  T57 RFID — Hex Editor\n")
