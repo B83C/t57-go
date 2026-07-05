@@ -218,34 +218,52 @@ func (c *Client) ReadConfig() (Config, error) {
 	return ConfigFromLEBytes(raw), nil
 }
 
-// ReadAllRaw reads block 0 and, if the device sends back more than
-// 4 bytes, distributes the data across all 8 blocks.  Some T5557
-// variants dump the entire card memory (32 bytes) when reading the
-// config block, which avoids 8 separate round-trips.
+// ReadAllRaw reads all 8 blocks.  Some T5557 variants dump the
+// entire card memory when reading any block.  We read block 1 and,
+// if the response contains multiple blocks, use them all and read
+// only the missing ones.
 func (c *Client) ReadAllRaw() ([8][4]byte, error) {
 	var out [8][4]byte
-	scratch, err := c.Transact(CmdT5557Read, []byte{byte(Page0), 0})
+	got := make([]bool, 8) // which blocks we already have
+
+	// Read block 1.  Response may contain 1..8 blocks.
+	scratch, err := c.Transact(CmdT5557Read, []byte{byte(Page0), 1})
 	if err != nil {
 		return out, err
 	}
-	if len(scratch) >= 8*BlockSize {
-		for i := 0; i < 8; i++ {
-			copy(out[i][:], scratch[i*4:i*4+4])
-		}
-		return out, nil
+	nBlks := len(scratch) / BlockSize
+	if nBlks > 8 {
+		nBlks = 8
 	}
-	if len(scratch) >= BlockSize {
-		copy(out[0][:], scratch[:4])
-	} else {
-		return out, makeErr("read_all", "buffer_too_small", ErrBufferTooSmall,
-			map[string]any{"needed": 4, "got": len(scratch)})
-	}
-	for bi := 1; bi <= 7; bi++ {
-		b, err := c.ReadBlock(uint8(bi))
-		if err != nil {
-			return out, err
+	// Data is sequential starting from block 1, wrapping to block 0.
+	for i := 0; i < nBlks; i++ {
+		bi := 1 + i
+		if bi >= 8 {
+			bi -= 8
 		}
-		out[bi] = b
+		copy(out[bi][:], scratch[i*4:i*4+4])
+		got[bi] = true
+	}
+
+	// Read any missing blocks individually.
+	for bi := 0; bi < 8; bi++ {
+		if got[bi] {
+			continue
+		}
+		if bi == 0 {
+			cfg, err := c.ReadConfig()
+			if err != nil {
+				return out, err
+			}
+			out[0] = cfg.LEBytes()
+		} else {
+			b, err := c.ReadBlock(uint8(bi))
+			if err != nil {
+				return out, err
+			}
+			out[bi] = b
+		}
+		got[bi] = true
 	}
 	return out, nil
 }
