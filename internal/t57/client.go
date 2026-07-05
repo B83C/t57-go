@@ -157,16 +157,14 @@ func (c *Client) ReadBlockRaw(page Page, block byte) ([BlockSize]byte, error) {
 			map[string]any{"needed": BlockSize, "got": len(raw)})
 	}
 	var out [BlockSize]byte
-	// Some devices ignore the block address and always return a
-	// cascade dump [block1, block2, ...] — extract the requested
-	// block by position.
-	if len(raw) > BlockSize && block >= 1 {
+	// Cascade dump: device returns [block1, block2, ...] regardless
+	// of which block was requested.  Extract our block by position.
+	if len(raw) > BlockSize && block >= 1 && int(block) <= len(raw)/BlockSize {
 		pos := int(block-1) * BlockSize
-		if pos+BlockSize <= len(raw) {
-			copy(out[:], raw[pos:pos+BlockSize])
-			return out, nil
-		}
+		copy(out[:], raw[pos:pos+BlockSize])
+		return out, nil
 	}
+	// Normal single-block response or special block (0, 7).
 	copy(out[:], raw[:BlockSize])
 	return out, nil
 }
@@ -229,32 +227,33 @@ func (c *Client) ReadConfig() (Config, error) {
 	return ConfigFromLEBytes(raw), nil
 }
 
-// ReadAllRaw reads all blocks in one shot by reading block 1
-// (which triggers a cascade dump on many cards), then reading
-// the config block separately.
+// ReadAllRaw reads all user blocks in one shot by reading block 1
+// (which triggers a cascade dump returning blocks 1..=6 on most
+// T5557-compatible cards), then reads block 7 and config separately
+// since those are special blocks not in the cascade.
 func (c *Client) ReadAllRaw() ([8][4]byte, error) {
 	var out [8][4]byte
+
+	// Cascade from block 1 → user blocks 1..=6.
 	scratch, err := c.Transact(CmdT5557Read, []byte{byte(Page0), 1})
 	if err != nil {
 		return out, err
 	}
-	// Response may contain 1..=7 user blocks starting from block 1.
 	n := len(scratch) / BlockSize
-	if n > 7 {
-		n = 7
+	if n > 6 {
+		n = 6
 	}
 	for i := 0; i < n; i++ {
 		copy(out[i+1][:], scratch[i*4:i*4+4])
 	}
-	// Any user blocks not covered by the cascade.
-	for bi := n + 1; bi <= 7; bi++ {
-		b, err := c.ReadBlock(uint8(bi))
-		if err != nil {
-			return out, err
-		}
-		out[bi] = b
+
+	// Block 7 is a special block — read it by explicit address.
+	b7, err := c.ReadBlockRaw(Page0, 7)
+	if err == nil {
+		out[7] = b7
 	}
-	// Config block separately.
+
+	// Config block (block 0).
 	cfg, err := c.ReadConfig()
 	if err != nil {
 		return out, err
