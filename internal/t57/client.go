@@ -218,6 +218,38 @@ func (c *Client) ReadConfig() (Config, error) {
 	return ConfigFromLEBytes(raw), nil
 }
 
+// ReadAllRaw reads block 0 and, if the device sends back more than
+// 4 bytes, distributes the data across all 8 blocks.  Some T5557
+// variants dump the entire card memory (32 bytes) when reading the
+// config block, which avoids 8 separate round-trips.
+func (c *Client) ReadAllRaw() ([8][4]byte, error) {
+	var out [8][4]byte
+	scratch, err := c.Transact(CmdT5557Read, []byte{byte(Page0), 0})
+	if err != nil {
+		return out, err
+	}
+	if len(scratch) >= 8*BlockSize {
+		for i := 0; i < 8; i++ {
+			copy(out[i][:], scratch[i*4:i*4+4])
+		}
+		return out, nil
+	}
+	if len(scratch) >= BlockSize {
+		copy(out[0][:], scratch[:4])
+	} else {
+		return out, makeErr("read_all", "buffer_too_small", ErrBufferTooSmall,
+			map[string]any{"needed": 4, "got": len(scratch)})
+	}
+	for bi := 1; bi <= 7; bi++ {
+		b, err := c.ReadBlock(uint8(bi))
+		if err != nil {
+			return out, err
+		}
+		out[bi] = b
+	}
+	return out, nil
+}
+
 // WriteConfig writes a Config to block 0. The 4 config bytes are sent
 // in little-endian order, matching the host's byte order on common
 // workstations.

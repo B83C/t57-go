@@ -218,28 +218,30 @@ func main() {
 		if err != nil {
 			return nil, err
 		}
-		js.Global().Get("console").Call("debug", "t57: reading config block")
-		cfg, err := c.ReadConfig()
+		js.Global().Get("console").Call("debug", "t57: reading all blocks (fast path via ReadAllRaw)")
+		blocks, err := c.ReadAllRaw()
 		if err != nil {
-			js.Global().Get("console").Call("error", "t57: read config failed:", err.Error())
-			return nil, err
-		}
-		js.Global().Get("console").Call("debug", "t57: reading blocks 1..7")
-		blks, err := c.ReadBlocks(1, 7)
-		if err != nil {
-			js.Global().Get("console").Call("error", "t57: read blocks failed:", err.Error())
-			return nil, err
+			js.Global().Get("console").Call("error", "t57: ReadAllRaw failed:", err.Error())
+			// Fall back: read config + individual blocks.
+			js.Global().Get("console").Call("debug", "t57: falling back to individual reads")
+			cfg, e2 := c.ReadConfig()
+			if e2 != nil {
+				return nil, e2
+			}
+			blks, e2 := c.ReadBlocks(1, 7)
+			if e2 != nil {
+				return nil, e2
+			}
+			blocks[0] = cfg.LEBytes()
+			for i, b := range blks {
+				blocks[i+1] = b
+			}
 		}
 		out := make([]map[string]interface{}, 8)
-		cfgRaw := cfg.LEBytes()
-		out[0] = map[string]interface{}{
-			"block": 0,
-			"hex":   hexBytes(cfgRaw[:]),
-		}
-		for i, b := range blks {
-			out[i+1] = map[string]interface{}{
-				"block": i + 1,
-				"hex":   hexBytes(b[:]),
+		for i, blk := range blocks {
+			out[i] = map[string]interface{}{
+				"block": i,
+				"hex":   hexBytes(blk[:]),
 			}
 		}
 		js.Global().Get("console").Call("debug", "t57: read all 8 blocks ok")
