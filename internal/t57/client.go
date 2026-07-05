@@ -134,23 +134,12 @@ func (c *Client) transactOnce(cmd Command, data []byte) error {
 // --- typed high-level methods ---
 
 // ReadBlock reads a T5557 user data block by 1-based index (1..=MaxBlock).
-// Block 0 is the config block, addressed by ReadConfig / WriteConfig.
 func (c *Client) ReadBlock(block byte) ([BlockSize]byte, error) {
 	if block < 1 || block > MaxBlock {
 		return [BlockSize]byte{}, makeErr("read_block", "out_of_range", ErrOutOfRange,
 			map[string]any{"field": "block", "value": block, "min": 1, "max": MaxBlock})
 	}
-	raw, err := c.Transact(CmdT5557Read, []byte{byte(Page0), block})
-	if err != nil {
-		return [BlockSize]byte{}, err
-	}
-	if len(raw) < BlockSize {
-		return [BlockSize]byte{}, makeErr("read_block", "buffer_too_small", ErrBufferTooSmall,
-			map[string]any{"needed": BlockSize, "got": len(raw)})
-	}
-	var out [BlockSize]byte
-	copy(out[:], raw[:BlockSize])
-	return out, nil
+	return c.ReadBlockRaw(Page0, block)
 }
 
 // ReadBlockRaw reads any T5557 block (0..=MaxBlock) at the given page.
@@ -168,6 +157,16 @@ func (c *Client) ReadBlockRaw(page Page, block byte) ([BlockSize]byte, error) {
 			map[string]any{"needed": BlockSize, "got": len(raw)})
 	}
 	var out [BlockSize]byte
+	// Some devices ignore the block address and always return a
+	// cascade dump [block1, block2, ...] — extract the requested
+	// block by position.
+	if len(raw) > BlockSize && block >= 1 {
+		pos := int(block-1) * BlockSize
+		if pos+BlockSize <= len(raw) {
+			copy(out[:], raw[pos:pos+BlockSize])
+			return out, nil
+		}
+	}
 	copy(out[:], raw[:BlockSize])
 	return out, nil
 }
@@ -182,6 +181,18 @@ func (c *Client) ReadBlocks(start, count byte) ([][BlockSize]byte, error) {
 	if start == 0 || int(start)+int(count)-1 > int(MaxBlock) {
 		return nil, makeErr("read_blocks", "out_of_range", ErrOutOfRange,
 			map[string]any{"field": "start", "value": start, "min": 1, "max": MaxBlock})
+	}
+	// If reading all or most blocks, use the fast cascade path.
+	if start == 1 && count >= 6 {
+		all, err := c.ReadAllRaw()
+		if err == nil {
+			out := make([][BlockSize]byte, count)
+			for i := byte(0); i < count; i++ {
+				out[i] = all[start+i]
+			}
+			return out, nil
+		}
+		// Fall through to individual reads.
 	}
 	out := make([][BlockSize]byte, count)
 	for i := byte(0); i < count; i++ {
@@ -218,53 +229,37 @@ func (c *Client) ReadConfig() (Config, error) {
 	return ConfigFromLEBytes(raw), nil
 }
 
-// ReadAllRaw reads all 8 blocks.  Some T5557 variants dump the
-// entire card memory when reading any block.  We read block 1 and,
-// if the response contains multiple blocks, use them all and read
-// only the missing ones.
+// ReadAllRaw reads all blocks in one shot by reading block 1
+// (which triggers a cascade dump on many cards), then reading
+// the config block separately.
 func (c *Client) ReadAllRaw() ([8][4]byte, error) {
 	var out [8][4]byte
-	got := make([]bool, 8) // which blocks we already have
-
-	// Read block 1.  Response may contain 1..8 blocks.
 	scratch, err := c.Transact(CmdT5557Read, []byte{byte(Page0), 1})
 	if err != nil {
 		return out, err
 	}
-	nBlks := len(scratch) / BlockSize
-	if nBlks > 8 {
-		nBlks = 8
+	// Response may contain 1..=7 user blocks starting from block 1.
+	n := len(scratch) / BlockSize
+	if n > 7 {
+		n = 7
 	}
-	// Data is sequential starting from block 1, wrapping to block 0.
-	for i := 0; i < nBlks; i++ {
-		bi := 1 + i
-		if bi >= 8 {
-			bi -= 8
-		}
-		copy(out[bi][:], scratch[i*4:i*4+4])
-		got[bi] = true
+	for i := 0; i < n; i++ {
+		copy(out[i+1][:], scratch[i*4:i*4+4])
 	}
-
-	// Read any missing blocks individually.
-	for bi := 0; bi < 8; bi++ {
-		if got[bi] {
-			continue
+	// Any user blocks not covered by the cascade.
+	for bi := n + 1; bi <= 7; bi++ {
+		b, err := c.ReadBlock(uint8(bi))
+		if err != nil {
+			return out, err
 		}
-		if bi == 0 {
-			cfg, err := c.ReadConfig()
-			if err != nil {
-				return out, err
-			}
-			out[0] = cfg.LEBytes()
-		} else {
-			b, err := c.ReadBlock(uint8(bi))
-			if err != nil {
-				return out, err
-			}
-			out[bi] = b
-		}
-		got[bi] = true
+		out[bi] = b
 	}
+	// Config block separately.
+	cfg, err := c.ReadConfig()
+	if err != nil {
+		return out, err
+	}
+	out[0] = cfg.LEBytes()
 	return out, nil
 }
 
