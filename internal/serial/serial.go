@@ -55,6 +55,10 @@ type Transport struct {
 
 // Open opens a serial port at the given path and baud rate with the
 // device's default framing: 8N1, no flow control.
+//
+// On Linux, we explicitly clear DTR and RTS after opening because
+// many USB-serial chips assert these signals by default, which can
+// reset or mute the connected module's transmitter.
 func Open(path string, baud int) (*Transport, error) {
 	return OpenWithTimeout(path, baud, DefaultReadTimeout)
 }
@@ -70,6 +74,16 @@ func OpenWithTimeout(path string, baud int, readTimeout time.Duration) (*Transpo
 	port, err := goSerial.Open(path, &cfg)
 	if err != nil {
 		return nil, fmt.Errorf("open serial %s: %w", path, err)
+	}
+	// Some chips assert DTR/RTS on open, which can mute the module's
+	// transmitter.  Clear these signals explicitly.
+	if err := port.SetDTR(false); err != nil {
+		port.Close()
+		return nil, fmt.Errorf("set DTR: %w", err)
+	}
+	if err := port.SetRTS(false); err != nil {
+		port.Close()
+		return nil, fmt.Errorf("set RTS: %w", err)
 	}
 	if err := port.SetReadTimeout(readTimeout); err != nil {
 		port.Close()
