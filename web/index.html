@@ -138,19 +138,17 @@ const lastRead = Array.from({length:8}, () => null);
 const changed = new Set();
 
 // ===== protocol helpers =====
+let busy = false;
+
 async function transact(cmd, payload) {
   const frame = encodeFrame(0, cmd, payload);
   const txHex = Array.from(frame).map(b=>b.toString(16).padStart(2,'0').toUpperCase()).join(' ');
   console.log('TX:', txHex, '('+frame.length+' bytes)');
-  const t0 = performance.now();
   await writer.write(frame);
-  const t1 = performance.now();
-  console.log('write took', (t1-t0).toFixed(1), 'ms');
-  await wait(100); // wait for bytes to transmit at 9600 baud
-  const resp = await readFrame(port, 5000);
-  const t2 = performance.now();
+  await wait(50);
+  const resp = await readFrame(port, 4000);
   const rxHex = Array.from(resp).map(b=>b.toString(16).padStart(2,'0').toUpperCase()).join(' ');
-  console.log('RX:', rxHex, '('+resp.length+' bytes, '+(t2-t1).toFixed(1)+'ms)');
+  console.log('RX:', rxHex, '('+resp.length+' bytes)');
   const dec = decodeFrame(resp);
   if (dec.status !== 0) throw new Error(`device status ${dec.status.toString(16)}: ${dec.data.length ? dec.data[0].toString(16) : '?'}`);
   return dec.data;
@@ -295,6 +293,8 @@ el('btnDisc').onclick = async () => {
 
 // ===== commands =====
 el('btnRead').onclick = async () => {
+  if (busy) return;
+  busy = true; render();
   try {
     log('Reading…', 't');
     await readAll();
@@ -306,6 +306,7 @@ el('btnRead').onclick = async () => {
     render();
     log('Read 8 blocks', 'ok');
   } catch(e) { log('Read: '+e, 'er'); console.error(e); }
+  busy = false; render();
 };
 
 el('btnWrite').onclick = async () => {

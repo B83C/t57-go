@@ -79,9 +79,9 @@ const STX = 0xAA, ETX = 0xBB;
 function bcc(bytes) { let x = 0; for (const b of bytes) x ^= b; return x; }
 
 function encodeFrame(station, cmd, data) {
-  const len = 1 + data.length;
-  const frame = new Uint8Array(5 + data.length);
-  frame[0] = STX; frame[1] = station; frame[2] = len;
+  // STX + station + length + cmd + data + BCC + ETX = 6 + data.length
+  const frame = new Uint8Array(6 + data.length);
+  frame[0] = STX; frame[1] = station; frame[2] = 1 + data.length;
   frame[3] = cmd; frame.set(data, 4);
   frame[4 + data.length] = bcc(frame.subarray(1, 4 + data.length));
   frame[5 + data.length] = ETX;
@@ -146,7 +146,7 @@ async function transact(cmd, payload) {
   await writer.write(frame);
   const t1 = performance.now();
   console.log('write took', (t1-t0).toFixed(1), 'ms');
-  await wait(20); // small delay for device to process
+  await wait(100); // wait for bytes to transmit at 9600 baud
   const resp = await readFrame(port, 5000);
   const t2 = performance.now();
   const rxHex = Array.from(resp).map(b=>b.toString(16).padStart(2,'0').toUpperCase()).join(' ');
@@ -270,9 +270,14 @@ el('btnConn').onclick = async () => {
     port = await navigator.serial.requestPort();
     const baud = parseInt(el('baudSel').value);
     log(`Opening port at ${baud} baud…`, 't');
-    await port.open({ baudRate: baud, dataBits: 8, stopBits: 1, parity: 'none', flowControl: 'none' });
-    // Clear DTR/RTS — many USB-serial chips mute TX when these are asserted
-    try { await port.setSignals({ dataTerminalReady: false, requestToSend: false }); } catch(e) {}
+    await port.open({ baudRate: baud, dataBits: 8, stopBits: 1, parity: 'none' });
+    // Try both DTR states — different chips need different settings
+    try {
+      await port.setSignals({ dataTerminalReady: false, requestToSend: false });
+      console.log('DTR=0 RTS=0');
+    } catch(e) {
+      console.warn('setSignals failed:', e.message);
+    }
     writer = port.writable.getWriter();
     connected = true;
     render();
