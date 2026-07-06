@@ -141,11 +141,16 @@ const changed = new Set();
 async function transact(cmd, payload) {
   const frame = encodeFrame(0, cmd, payload);
   const txHex = Array.from(frame).map(b=>b.toString(16).padStart(2,'0').toUpperCase()).join(' ');
-  console.log('TX:', txHex);
+  console.log('TX:', txHex, '('+frame.length+' bytes)');
+  const t0 = performance.now();
   await writer.write(frame);
-  const resp = await readFrame(port);
+  const t1 = performance.now();
+  console.log('write took', (t1-t0).toFixed(1), 'ms');
+  await wait(20); // small delay for device to process
+  const resp = await readFrame(port, 5000);
+  const t2 = performance.now();
   const rxHex = Array.from(resp).map(b=>b.toString(16).padStart(2,'0').toUpperCase()).join(' ');
-  console.log('RX:', rxHex, '('+resp.length+' bytes)');
+  console.log('RX:', rxHex, '('+resp.length+' bytes, '+(t2-t1).toFixed(1)+'ms)');
   const dec = decodeFrame(resp);
   if (dec.status !== 0) throw new Error(`device status ${dec.status.toString(16)}: ${dec.data.length ? dec.data[0].toString(16) : '?'}`);
   return dec.data;
@@ -265,7 +270,9 @@ el('btnConn').onclick = async () => {
     port = await navigator.serial.requestPort();
     const baud = parseInt(el('baudSel').value);
     log(`Opening port at ${baud} baud…`, 't');
-    await port.open({ baudRate: baud });
+    await port.open({ baudRate: baud, dataBits: 8, stopBits: 1, parity: 'none', flowControl: 'none' });
+    // Clear DTR/RTS — many USB-serial chips mute TX when these are asserted
+    try { await port.setSignals({ dataTerminalReady: false, requestToSend: false }); } catch(e) {}
     writer = port.writable.getWriter();
     connected = true;
     render();
