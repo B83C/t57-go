@@ -268,10 +268,23 @@ func autoDetect(c *args) (*t57.Client, error) {
 					continue
 				}
 				client := t57.NewClient(tr).WithRetries(0)
+				isT57 := false
 				sn, err := client.SerialNumber()
 				if err == nil {
+					isT57 = true
+				} else if isDeviceError(err) {
+					// Device returned a T57 error frame (e.g.
+					// "no card") — the device IS a T57, just
+					// the specific command failed.
+					isT57 = true
+				}
+				if isT57 {
 					if c.Verbose {
-						fmt.Fprintf(os.Stderr, "  ✓ %s @ %d baud, serial=%X\n", p.Name, baud, sn)
+						if sn != ([8]byte{}) {
+							fmt.Fprintf(os.Stderr, "  ✓ %s @ %d baud, serial=%X\n", p.Name, baud, sn)
+						} else {
+							fmt.Fprintf(os.Stderr, "  ✓ %s @ %d baud (no serial, but talks T57)\n", p.Name, baud)
+						}
 					}
 					results <- probeResult{client: client.WithRetries(c.Retries), port: p.Name, baud: baud}
 					return
@@ -1247,6 +1260,13 @@ Run 't57 help' to see this message.`)
 // runServe starts a local HTTP server that serves the embedded
 // frontend (index.html, t57.wasm, wasm_exec.js). Users can then
 // open http://<addr> in a browser that supports Web Serial.
+// isDeviceError returns true if err is a t57.DeviceError (device
+// responded with a valid T57 frame but non-zero status).
+func isDeviceError(err error) bool {
+	_, ok := t57.AsDeviceError(err)
+	return ok
+}
+
 func runServe(cmd cmdServe) error {
 	addr := cmd.Addr
 	if addr == "" {
