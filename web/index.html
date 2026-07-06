@@ -104,9 +104,10 @@ async function readFrame(port, timeoutMs = 3000) {
   const reader = port.readable.getReader();
   const buf = [];
   let timedOut = false;
-  const timer = setTimeout(() => { timedOut = true; }, timeoutMs);
+  // Cancel the reader when timeout fires — this interrupts reader.read()
+  const timer = setTimeout(() => { reader.cancel(); timedOut = true; }, timeoutMs);
   try {
-    while (!timedOut) {
+    while (true) {
       const { value, done } = await reader.read();
       if (done) break;
       for (const b of value) {
@@ -118,7 +119,6 @@ async function readFrame(port, timeoutMs = 3000) {
     clearTimeout(timer);
     reader.releaseLock();
   }
-  // If we got some bytes but no ETX, return what we have
   if (buf.length > 0) return new Uint8Array(buf);
   if (timedOut) throw new Error('timeout');
   throw new Error('stream ended');
@@ -161,9 +161,11 @@ async function readAll() {
       blocks[0] = await readBlock(0);
       return;
     }
-  } catch(e) { debug('cascade failed:', e.message); }
+  } catch(e) { debug('cascade failed, fallback to individual reads:', e.message); }
   // Fall back to individual reads
-  for (let i = 0; i <= 7; i++) blocks[i] = await readBlock(i);
+  for (let i = 0; i <= 7; i++) {
+    blocks[i] = await readBlock(i);
+  }
 }
 
 async function writeBlock(n, data) {
