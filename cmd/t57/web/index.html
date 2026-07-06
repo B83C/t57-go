@@ -100,11 +100,13 @@ function decodeFrame(buf) {
   return { status: buf[3], data: buf.slice(4, bccPos) };
 }
 
-async function readFrame(port) {
+async function readFrame(port, timeoutMs = 3000) {
   const reader = port.readable.getReader();
   const buf = [];
+  let timedOut = false;
+  const timer = setTimeout(() => { timedOut = true; }, timeoutMs);
   try {
-    while (true) {
+    while (!timedOut) {
       const { value, done } = await reader.read();
       if (done) break;
       for (const b of value) {
@@ -112,8 +114,14 @@ async function readFrame(port) {
         if (b === ETX) return new Uint8Array(buf);
       }
     }
-  } finally { reader.releaseLock(); }
-  throw new Error('no data');
+  } finally {
+    clearTimeout(timer);
+    reader.releaseLock();
+  }
+  // If we got some bytes but no ETX, return what we have
+  if (buf.length > 0) return new Uint8Array(buf);
+  if (timedOut) throw new Error('timeout');
+  throw new Error('stream ended');
 }
 
 // ===== state =====
