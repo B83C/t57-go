@@ -103,12 +103,17 @@ function decodeFrame(buf) {
 async function readFrame(port, timeoutMs = 3000) {
   const reader = port.readable.getReader();
   const buf = [];
-  let timedOut = false;
-  // Cancel the reader when timeout fires — this interrupts reader.read()
-  const timer = setTimeout(() => { reader.cancel(); timedOut = true; }, timeoutMs);
   try {
     while (true) {
-      const { value, done } = await reader.read();
+      const result = await Promise.race([
+        reader.read(),
+        wait(timeoutMs).then(() => ({timedOut: true}))
+      ]);
+      if (result.timedOut) {
+        if (buf.length > 0) return new Uint8Array(buf);
+        throw new Error('timeout');
+      }
+      const { value, done } = result;
       if (done) break;
       for (const b of value) {
         buf.push(b);
@@ -116,13 +121,12 @@ async function readFrame(port, timeoutMs = 3000) {
       }
     }
   } finally {
-    clearTimeout(timer);
     reader.releaseLock();
   }
   if (buf.length > 0) return new Uint8Array(buf);
-  if (timedOut) throw new Error('timeout');
   throw new Error('stream ended');
 }
+function wait(ms) { return new Promise(r => setTimeout(r, ms)); }
 
 // ===== state =====
 let port = null;
@@ -136,10 +140,12 @@ const changed = new Set();
 // ===== protocol helpers =====
 async function transact(cmd, payload) {
   const frame = encodeFrame(0, cmd, payload);
-  debug('tx:', Array.from(frame).map(b=>b.toString(16).padStart(2,'0').toUpperCase()).join(' '));
+  const txHex = Array.from(frame).map(b=>b.toString(16).padStart(2,'0').toUpperCase()).join(' ');
+  console.log('TX:', txHex);
   await writer.write(frame);
   const resp = await readFrame(port);
-  debug('rx:', Array.from(resp).map(b=>b.toString(16).padStart(2,'0').toUpperCase()).join(' '));
+  const rxHex = Array.from(resp).map(b=>b.toString(16).padStart(2,'0').toUpperCase()).join(' ');
+  console.log('RX:', rxHex, '('+resp.length+' bytes)');
   const dec = decodeFrame(resp);
   if (dec.status !== 0) throw new Error(`device status ${dec.status.toString(16)}: ${dec.data.length ? dec.data[0].toString(16) : '?'}`);
   return dec.data;
