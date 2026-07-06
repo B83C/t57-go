@@ -23,7 +23,7 @@ import (
 	"github.com/B83C/t57-go/internal/t57"
 )
 
-//go:embed web/index.html web/monitor.html web/dist/t57.wasm web/dist/wasm_exec.js
+//go:embed web/index.html
 var webFS embed.FS
 
 // webRoot serves the embedded files at "/" by stripping the "web/" prefix
