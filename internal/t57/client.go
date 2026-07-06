@@ -227,33 +227,55 @@ func (c *Client) ReadConfig() (Config, error) {
 	return ConfigFromLEBytes(raw), nil
 }
 
-// ReadAllRaw reads all user blocks in one shot by reading block 1
-// (which triggers a cascade dump returning blocks 1..=6 on most
-// T5557-compatible cards), then reads block 7 and config separately
-// since those are special blocks not in the cascade.
+// ReadAllRaw reads all user blocks in one shot.
+// Strategy: try the 0x9A multi-block-read command first; if that
+// fails (unknown command), fall back to a page-only T5557Read (1
+// data byte = cascade dump); if that also fails, read individually.
 func (c *Client) ReadAllRaw() ([8][4]byte, error) {
 	var out [8][4]byte
 
-	// Cascade from block 1 → user blocks 1..=6.
-	scratch, err := c.Transact(CmdT5557Read, []byte{byte(Page0), 1})
-	if err != nil {
-		return out, err
-	}
-	n := len(scratch) / BlockSize
-	if n > 6 {
-		n = 6
-	}
-	for i := 0; i < n; i++ {
-		copy(out[i+1][:], scratch[i*4:i*4+4])
+	// Method 1: 0x9A multi-block-read command (vendor-specific).
+	scratch, err := c.Transact(Command(0x9A), []byte{0xFE})
+	if err == nil && len(scratch) >= 4 {
+		n := len(scratch) / BlockSize
+		if n > 7 {
+			n = 7
+		}
+		for i := 0; i < n; i++ {
+			copy(out[i+1][:], scratch[i*4:i*4+4])
+		}
+		cfg, err := c.ReadConfig()
+		if err == nil {
+			out[0] = cfg.LEBytes()
+		}
+		return out, nil
 	}
 
-	// Block 7 is a special block — read it by explicit address.
-	b7, err := c.ReadBlockRaw(Page0, 7)
+	// Method 2: page-only read (1 data byte) — triggers cascade dump.
+	scratch, err = c.Transact(CmdT5557Read, []byte{byte(Page0)})
 	if err == nil {
-		out[7] = b7
+		n := len(scratch) / BlockSize
+		if n > 7 {
+			n = 7
+		}
+		for i := 0; i < n; i++ {
+			copy(out[i+1][:], scratch[i*4:i*4+4])
+		}
+		cfg, err := c.ReadConfig()
+		if err == nil {
+			out[0] = cfg.LEBytes()
+		}
+		return out, nil
 	}
 
-	// Config block (block 0).
+	// Method 3: fall back to individual reads.
+	for bi := 1; bi <= 7; bi++ {
+		b, err := c.ReadBlock(uint8(bi))
+		if err != nil {
+			return out, err
+		}
+		out[bi] = b
+	}
 	cfg, err := c.ReadConfig()
 	if err != nil {
 		return out, err
