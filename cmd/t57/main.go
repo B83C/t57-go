@@ -269,22 +269,15 @@ func autoDetect(c *args) (*t57.Client, error) {
 				}
 				client := t57.NewClient(tr).WithRetries(0)
 				isT57 := false
-				sn, err := client.SerialNumber()
-				if err == nil {
+				_, probeErr := client.Transact(t57.CmdT5557Read, []byte{0x00})
+				if probeErr == nil {
 					isT57 = true
-				} else if isDeviceError(err) {
-					// Device returned a T57 error frame (e.g.
-					// "no card") — the device IS a T57, just
-					// the specific command failed.
+				} else if isDeviceError(probeErr) {
 					isT57 = true
 				}
 				if isT57 {
 					if c.Verbose {
-						if sn != ([8]byte{}) {
-							fmt.Fprintf(os.Stderr, "  ✓ %s @ %d baud, serial=%X\n", p.Name, baud, sn)
-						} else {
-							fmt.Fprintf(os.Stderr, "  ✓ %s @ %d baud (no serial, but talks T57)\n", p.Name, baud)
-						}
+						fmt.Fprintf(os.Stderr, "  ✓ %s @ %d baud (T57 detected)\n", p.Name, baud)
 					}
 					results <- probeResult{client: client.WithRetries(c.Retries), port: p.Name, baud: baud}
 					return
