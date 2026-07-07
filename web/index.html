@@ -63,6 +63,8 @@
     <button id="btnWrite" class="danger" disabled>Write</button>
     <button id="btnDef" disabled>Default Cfg</button>
     <button id="btnBeep" disabled>Beep</button>
+    <button id="btnSave" disabled>Save</button>
+    <button id="btnLoad" disabled>Load</button>
   </div>
 
   <div class="grid" id="grid"></div>
@@ -73,13 +75,11 @@
 <script>
 "use strict";
 
-// ===== protocol =====
 const STX = 0xAA, ETX = 0xBB;
 
 function bcc(bytes) { let x = 0; for (const b of bytes) x ^= b; return x; }
 
 function encodeFrame(station, cmd, data) {
-  // STX + station + length + cmd + data + BCC + ETX = 6 + data.length
   const frame = new Uint8Array(6 + data.length);
   frame[0] = STX; frame[1] = station; frame[2] = 1 + data.length;
   frame[3] = cmd; frame.set(data, 4);
@@ -100,7 +100,7 @@ function decodeFrame(buf) {
   return { status: buf[3], data: buf.slice(4, bccPos) };
 }
 
-async function readFrame(port, timeoutMs = 3000) {
+async function readFrame(port, timeoutMs) {
   const reader = port.readable.getReader();
   const buf = [];
   try {
@@ -126,68 +126,91 @@ async function readFrame(port, timeoutMs = 3000) {
   if (buf.length > 0) return new Uint8Array(buf);
   throw new Error('stream ended');
 }
+
 function wait(ms) { return new Promise(r => setTimeout(r, ms)); }
 
-// ===== state =====
 let port = null;
 let writer = null;
-let reader = null;
 let connected = false;
+let busy = false;
 const blocks = Array.from({length:8}, () => new Uint8Array(4));
 const lastRead = Array.from({length:8}, () => null);
 const changed = new Set();
 
-// ===== protocol helpers =====
-let busy = false;
-
 async function transact(cmd, payload) {
   const frame = encodeFrame(0, cmd, payload);
-  const txHex = Array.from(frame).map(b=>b.toString(16).padStart(2,'0').toUpperCase()).join(' ');
-  console.log('TX:', txHex, '('+frame.length+' bytes)');
+  console.log('TX:', Array.from(frame).map(b=>b.toString(16).padStart(2,'0').toUpperCase()).join(' '), '('+frame.length+' bytes)');
   await writer.write(frame);
   await wait(50);
   const resp = await readFrame(port, 4000);
-  const rxHex = Array.from(resp).map(b=>b.toString(16).padStart(2,'0').toUpperCase()).join(' ');
-  console.log('RX:', rxHex, '('+resp.length+' bytes)');
+  console.log('RX:', Array.from(resp).map(b=>b.toString(16).padStart(2,'0').toUpperCase()).join(' '), '('+resp.length+' bytes)');
   const dec = decodeFrame(resp);
   if (dec.status !== 0) throw new Error(`device status ${dec.status.toString(16)}: ${dec.data.length ? dec.data[0].toString(16) : '?'}`);
   return dec.data;
 }
 
-async function readBlock(n) {
-  const raw = await transact(0x90, n === 0 ? [0, 0] : [0, n]);
-  if (raw.length >= 4) return raw.slice(0, 4);
-  throw new Error(`short read: ${raw.length} bytes`);
+async function readBlockRaw(page, block) {
+  const raw = await transact(0x90, [page, block]);
+  if (raw.length < 4) throw new Error(`short read: ${raw.length} bytes`);
+  // Cascade dump: device returns [block1, block2, ...] regardless
+  // of which block was requested. Extract our block by position.
+  if (raw.length > 4 && block >= 1 && block <= Math.floor(raw.length / 4)) {
+    const pos = (block - 1) * 4;
+    return raw.slice(pos, pos + 4);
+  }
+  return raw.slice(0, 4);
+}
+
+async function readConfig() {
+  const raw = await transact(0x90, [0, 0]);
+  if (raw.length < 4) throw new Error(`short config read: ${raw.length} bytes`);
+  return raw.slice(0, 4);
 }
 
 async function readAll() {
-  // Try page-only cascade first (1 byte = no block address)
+  // Method 1: 0x9A multi-block-read (vendor-specific, returns all user blocks).
+  try {
+    const raw = await transact(0x9A, [0xFE]);
+    if (raw.length >= 4) {
+      const n = Math.min(Math.floor(raw.length / 4), 7);
+      for (let i = 0; i < n; i++) blocks[i+1] = new Uint8Array(raw.slice(i*4, i*4+4));
+      const cfg = await readConfig();
+      blocks[0] = cfg;
+      return;
+    }
+  } catch(e) { console.log('0x9A failed:', e.message); }
+
+  // Method 2: page-only T5557 read (1 data byte) — triggers cascade dump.
   try {
     const raw = await transact(0x90, [0]);
     if (raw.length >= 4) {
       const n = Math.min(Math.floor(raw.length / 4), 7);
       for (let i = 0; i < n; i++) blocks[i+1] = new Uint8Array(raw.slice(i*4, i*4+4));
-      blocks[0] = await readBlock(0);
+      const cfg = await readConfig();
+      blocks[0] = cfg;
       return;
     }
-  } catch(e) { debug('cascade failed, fallback to individual reads:', e.message); }
-  // Fall back to individual reads
-  for (let i = 0; i <= 7; i++) {
-    blocks[i] = await readBlock(i);
-  }
+  } catch(e) { console.log('cascade failed:', e.message); }
+
+  // Method 3: individual reads.
+  for (let i = 1; i <= 7; i++) blocks[i] = await readBlockRaw(0, i);
+  blocks[0] = await readConfig();
 }
 
 async function writeBlock(n, data) {
-  if (n === 0) {
-    await transact(0x91, [0, 0, data[0], data[1], data[2], data[3]]);
-  } else {
-    await transact(0x91, [0, n, data[0], data[1], data[2], data[3]]);
-  }
+  await transact(0x91, [0, n, data[0], data[1], data[2], data[3]]);
 }
 
 async function beep() { await transact(0x89, [5, 1]); }
 
-// ===== UI =====
+async function getSerialNumber() {
+  try { const raw = await transact(0x83, []); return raw.length >= 8 ? Array.from(raw.slice(0,8)).map(b=>b.toString(16).padStart(2,'0')).join('').toUpperCase() : ''; } catch(e) { return ''; }
+}
+
+async function getFirmwareVersion() {
+  try { const raw = await transact(0x86, []); return new TextDecoder().decode(raw).replace(/\0/g, '').trim(); } catch(e) { return ''; }
+}
+
 function el(id) { return document.getElementById(id); }
 
 function grid() {
@@ -245,10 +268,12 @@ function render() {
   el('status').textContent = connected ? 'Connected' : 'Not connected';
   el('btnConn').disabled = connected;
   el('btnDisc').disabled = !connected;
-  el('btnRead').disabled = !connected;
-  el('btnWrite').disabled = !connected || changed.size === 0;
-  el('btnDef').disabled = !connected;
-  el('btnBeep').disabled = !connected;
+  el('btnRead').disabled = !connected || busy;
+  el('btnWrite').disabled = !connected || changed.size === 0 || busy;
+  el('btnDef').disabled = !connected || busy;
+  el('btnBeep').disabled = !connected || busy;
+  el('btnSave').disabled = !connected || busy;
+  el('btnLoad').disabled = !connected || busy;
 }
 
 function log(msg, cls) {
@@ -257,11 +282,6 @@ function log(msg, cls) {
   el('log').scrollTop = el('log').scrollHeight;
 }
 
-function debug(...args) {
-  if (window.DEBUG) console.debug('t57:', ...args);
-}
-
-// ===== connection =====
 el('btnConn').onclick = async () => {
   if (!navigator.serial) { log('Web Serial not available', 'er'); return; }
   try {
@@ -269,17 +289,18 @@ el('btnConn').onclick = async () => {
     const baud = parseInt(el('baudSel').value);
     log(`Opening port at ${baud} baud…`, 't');
     await port.open({ baudRate: baud, dataBits: 8, stopBits: 1, parity: 'none' });
-    // Try both DTR states — different chips need different settings
     try {
       await port.setSignals({ dataTerminalReady: false, requestToSend: false });
-      console.log('DTR=0 RTS=0');
     } catch(e) {
       console.warn('setSignals failed:', e.message);
     }
     writer = port.writable.getWriter();
-    connected = true;
-    render();
-    log('Connected', 'ok');
+    connected = true; render();
+    log('Connected — reading device info…', 'ok');
+    const sn = await getSerialNumber();
+    const fw = await getFirmwareVersion();
+    if (sn || fw) log(`SN: ${sn || '?'}  FW: ${fw || '?'}`, 'ok');
+    log('Connected — press Read All', 'ok');
   } catch(e) { log('Connect: '+e, 'er'); console.error(e); }
 };
 
@@ -291,7 +312,6 @@ el('btnDisc').onclick = async () => {
   log('Disconnected', 'er');
 };
 
-// ===== commands =====
 el('btnRead').onclick = async () => {
   if (busy) return;
   busy = true; render();
@@ -313,6 +333,8 @@ el('btnWrite').onclick = async () => {
   const toWrite = [...changed];
   if (toWrite.length === 0) { log('Nothing changed', 't'); return; }
   if (!confirm(`Write ${toWrite.length} block(s): ${toWrite.join(',')}?`)) { log('Cancelled', 't'); return; }
+  if (busy) return;
+  busy = true; render();
   try {
     for (const b of toWrite) {
       const data = getBlock(b);
@@ -323,6 +345,7 @@ el('btnWrite').onclick = async () => {
     render();
     log(`Wrote ${toWrite.length} block(s)`, 'ok');
   } catch(e) { log('Write: '+e, 'er'); console.error(e); }
+  busy = false; render();
 };
 
 el('btnDef').onclick = () => {
@@ -333,10 +356,33 @@ el('btnDef').onclick = () => {
 };
 
 el('btnBeep').onclick = async () => {
+  if (busy) return;
+  busy = true; render();
   try { await beep(); log('Beep!', 'ok'); } catch(e) { log('Beep: '+e, 'er'); }
+  busy = false; render();
 };
 
-// ===== init =====
+el('btnSave').onclick = () => {
+  const data = blocks.map(b => Array.from(b));
+  localStorage.setItem('t57_snapshot', JSON.stringify(data));
+  log('Snapshot saved', 'ok');
+};
+
+el('btnLoad').onclick = () => {
+  const raw = localStorage.getItem('t57_snapshot');
+  if (!raw) { log('No snapshot found', 'er'); return; }
+  try {
+    const data = JSON.parse(raw);
+    for (let b = 0; b < 8; b++) {
+      setBlock(b, new Uint8Array(data[b]));
+      lastRead[b] = null;
+      changed.delete(b); el('r'+b).classList.remove('changed'); el('s'+b).textContent = '';
+    }
+    render();
+    log('Snapshot loaded', 'ok');
+  } catch(e) { log('Load: '+e, 'er'); }
+};
+
 grid();
 el('loading').style.display = 'none';
 el('app').style.display = 'block';
