@@ -190,14 +190,15 @@ function cacheCascade(raw) {
 }
 
 // Read a single block. Checks cascade cache first.
-// block: 0 = config, 1-7 = user blocks.
+// block: 1-7 (block 0 and 7 cannot be read from the device).
 async function readBlock(block) {
+  if (block === 0 || block === 7) throw new Error(`block ${block} cannot be read`);
   // Check cache first
   if (cascadeCache && cascadeCache[block]) {
     console.log('readBlock', block, '→ cache hit');
     return cascadeCache[block];
   }
-  // Read from device
+  // Read from device — triggers cascade dump
   const raw = await transact(0x90, [0, block]);
   if (raw.length < 4) throw new Error(`short read: ${raw.length} bytes`);
   // Cascade dump: device returns all blocks regardless of which was requested.
@@ -210,19 +211,15 @@ async function readBlock(block) {
   return raw.slice(0, 4);
 }
 
-// Read config (block 0). Tries cache, then direct read.
+// Read config (block 0). Returns null if device doesn't respond.
 async function readConfig() {
-  if (cascadeCache && cascadeCache[0]) {
-    console.log('readConfig → cache hit');
-    return cascadeCache[0];
-  }
-  // Block 0 may not respond on some devices — caller should handle error
   const raw = await transact(0x90, [0, 0]);
   if (raw.length < 4) throw new Error(`short config read: ${raw.length} bytes`);
   return raw.slice(0, 4);
 }
 
-// Read all blocks. Tries fast methods first, falls back to individual reads.
+// Read all blocks. One cascade read fills blocks 1-6.
+// Block 0 (config) and block 7 (special) cannot be read from the device.
 async function readAll() {
   cascadeCache = null;
 
@@ -233,8 +230,6 @@ async function readAll() {
     console.log('readAll: 0x9A returned', raw.length, 'bytes');
     if (raw.length >= 4) {
       cacheCascade(raw);
-      // Try to read config separately
-      try { blocks[0] = await readConfig(); } catch(e) { console.log('readAll: config read skipped:', e.message); }
       for (let i = 1; i <= 7; i++) {
         if (cascadeCache[i]) blocks[i] = cascadeCache[i];
       }
@@ -249,7 +244,6 @@ async function readAll() {
     console.log('readAll: cascade returned', raw.length, 'bytes');
     if (raw.length >= 4) {
       cacheCascade(raw);
-      try { blocks[0] = await readConfig(); } catch(e) { console.log('readAll: config read skipped:', e.message); }
       for (let i = 1; i <= 7; i++) {
         if (cascadeCache[i]) blocks[i] = cascadeCache[i];
       }
@@ -257,9 +251,12 @@ async function readAll() {
     }
   } catch(e) { console.log('readAll: cascade failed:', e.message); }
 
-  // Method 3: individual reads (cache populates automatically).
-  console.log('readAll: falling back to individual reads');
-  for (let i = 1; i <= 7; i++) blocks[i] = await readBlock(i);
+  // Method 3: read block 1 — triggers cascade for blocks 1-6.
+  console.log('readAll: reading block 1 to trigger cascade...');
+  blocks[1] = await readBlock(1);
+  for (let i = 2; i <= 7; i++) {
+    if (cascadeCache && cascadeCache[i]) blocks[i] = cascadeCache[i];
+  }
 }
 
 async function writeBlock(n, data) {
@@ -365,18 +362,6 @@ el('btnConn').onclick = async () => {
     const sn = await getSerialNumber();
     const fw = await getFirmwareVersion();
     if (sn || fw) log(`SN: ${sn || '?'}  FW: ${fw || '?'}`, 'ok');
-
-    // Test: try reading block 0 right after connect
-    try {
-      console.log('Testing block 0 read...');
-      const cfg = await readConfig();
-      console.log('Block 0 read OK:', Array.from(cfg).map(b=>b.toString(16).padStart(2,'0')).join(' '));
-      blocks[0] = cfg;
-      setBlock(0, cfg);
-    } catch(e) {
-      console.log('Block 0 read failed:', e.message);
-    }
-
     log('Connected — press Read All', 'ok');
   } catch(e) { log('Connect: '+e, 'er'); console.error(e); }
 };
