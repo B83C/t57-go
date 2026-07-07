@@ -103,16 +103,16 @@ function decodeFrame(buf) {
 async function readFrame(port, timeoutMs) {
   const reader = port.readable.getReader();
   const buf = [];
+  const deadline = performance.now() + timeoutMs;
   try {
-    while (true) {
+    while (performance.now() < deadline) {
+      const remaining = Math.max(1, deadline - performance.now());
+      let resolved = false;
       const result = await Promise.race([
-        reader.read(),
-        wait(timeoutMs).then(() => ({timedOut: true}))
+        reader.read().then(r => { resolved = true; return r; }),
+        wait(remaining).then(() => ({timedOut: true}))
       ]);
-      if (result.timedOut) {
-        if (buf.length > 0) return new Uint8Array(buf);
-        throw new Error('timeout');
-      }
+      if (result.timedOut) break;
       const { value, done } = result;
       if (done) break;
       for (const b of value) {
@@ -124,7 +124,7 @@ async function readFrame(port, timeoutMs) {
     reader.releaseLock();
   }
   if (buf.length > 0) return new Uint8Array(buf);
-  throw new Error('stream ended');
+  throw new Error('timeout');
 }
 
 function wait(ms) { return new Promise(r => setTimeout(r, ms)); }
@@ -141,8 +141,8 @@ async function transact(cmd, payload) {
   const frame = encodeFrame(0, cmd, payload);
   console.log('TX:', Array.from(frame).map(b=>b.toString(16).padStart(2,'0').toUpperCase()).join(' '), '('+frame.length+' bytes)');
   await writer.write(frame);
-  await wait(50);
-  const resp = await readFrame(port, 4000);
+  await wait(100);
+  const resp = await readFrame(port, 5000);
   console.log('RX:', Array.from(resp).map(b=>b.toString(16).padStart(2,'0').toUpperCase()).join(' '), '('+resp.length+' bytes)');
   const dec = decodeFrame(resp);
   if (dec.status !== 0) throw new Error(`device status ${dec.status.toString(16)}: ${dec.data.length ? dec.data[0].toString(16) : '?'}`);
