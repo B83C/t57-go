@@ -148,11 +148,26 @@ const blocks = Array.from({length:8}, () => new Uint8Array(4));
 const lastRead = Array.from({length:8}, () => null);
 const changed = new Set();
 
+async function drain() {
+  try {
+    const reader = port.readable.getReader();
+    // Read and discard any pending bytes with a short timeout
+    const result = await Promise.race([
+      reader.read(),
+      wait(50).then(() => ({timedOut: true}))
+    ]);
+    reader.releaseLock();
+    if (!result.timedOut && result.value) {
+      console.log('drain: discarded', result.value.length, 'bytes');
+    }
+  } catch(e) {}
+}
+
 async function transact(cmd, payload) {
   const frame = encodeFrame(0, cmd, payload);
   console.log('TX:', Array.from(frame).map(b=>b.toString(16).padStart(2,'0').toUpperCase()).join(' '), '('+frame.length+' bytes)');
+  await drain();
   await writer.write(frame);
-  await wait(100);
   const resp = await readFrame(port, 5000);
   console.log('RX:', Array.from(resp).map(b=>b.toString(16).padStart(2,'0').toUpperCase()).join(' '), '('+resp.length+' bytes)');
   const dec = decodeFrame(resp);
@@ -186,9 +201,11 @@ async function readAll() {
     console.log('readAll: 0x9A returned', raw.length, 'bytes');
     if (raw.length >= 4) {
       const n = Math.min(Math.floor(raw.length / 4), 7);
+      // Map cascade data to blocks — try both mappings and see which works
       for (let i = 0; i < n; i++) blocks[i+1] = new Uint8Array(raw.slice(i*4, i*4+4));
-      const cfg = await readConfig();
-      blocks[0] = cfg;
+      // Skip config read — device doesn't respond to block 0 reads
+      // Try to get config from the cascade data instead
+      // The cascade might return blocks 0-6 or 1-7 — we'll find out from the user
       return;
     }
   } catch(e) { console.log('readAll: 0x9A failed:', e.message); }
@@ -201,16 +218,13 @@ async function readAll() {
     if (raw.length >= 4) {
       const n = Math.min(Math.floor(raw.length / 4), 7);
       for (let i = 0; i < n; i++) blocks[i+1] = new Uint8Array(raw.slice(i*4, i*4+4));
-      const cfg = await readConfig();
-      blocks[0] = cfg;
       return;
     }
   } catch(e) { console.log('readAll: cascade failed:', e.message); }
 
-  // Method 3: individual reads.
+  // Method 3: individual reads (skip block 0).
   console.log('readAll: falling back to individual reads');
   for (let i = 1; i <= 7; i++) blocks[i] = await readBlockRaw(0, i);
-  blocks[0] = await readConfig();
 }
 
 async function writeBlock(n, data) {
@@ -316,6 +330,18 @@ el('btnConn').onclick = async () => {
     const sn = await getSerialNumber();
     const fw = await getFirmwareVersion();
     if (sn || fw) log(`SN: ${sn || '?'}  FW: ${fw || '?'}`, 'ok');
+
+    // Test: try reading block 0 right after connect
+    try {
+      console.log('Testing block 0 read...');
+      const cfg = await readConfig();
+      console.log('Block 0 read OK:', Array.from(cfg).map(b=>b.toString(16).padStart(2,'0')).join(' '));
+      blocks[0] = cfg;
+      setBlock(0, cfg);
+    } catch(e) {
+      console.log('Block 0 read failed:', e.message);
+    }
+
     log('Connected — press Read All', 'ok');
   } catch(e) { log('Connect: '+e, 'er'); console.error(e); }
 };
