@@ -148,10 +148,13 @@ const blocks = Array.from({length:8}, () => new Uint8Array(4));
 const lastRead = Array.from({length:8}, () => null);
 const changed = new Set();
 
+// Cascade cache: stores all blocks from a single cascade dump.
+// null = empty (no cache). Each entry is a Uint8Array(4) or null.
+let cascadeCache = null;
+
 async function drain() {
   try {
     const reader = port.readable.getReader();
-    // Read and discard any pending bytes with a short timeout
     const result = await Promise.race([
       reader.read(),
       wait(50).then(() => ({timedOut: true}))
@@ -175,37 +178,66 @@ async function transact(cmd, payload) {
   return dec.data;
 }
 
-async function readBlockRaw(page, block) {
-  const raw = await transact(0x90, [page, block]);
-  if (raw.length < 4) throw new Error(`short read: ${raw.length} bytes`);
-  // Cascade dump: device returns [block1, block2, ...] regardless
-  // of which block was requested. Extract our block by position.
-  if (raw.length > 4 && block >= 1 && block <= Math.floor(raw.length / 4)) {
-    const pos = (block - 1) * 4;
-    return raw.slice(pos, pos + 4);
+// Populate cascade cache from raw response data.
+// Returns the number of blocks cached (excluding block 0 / config).
+function cacheCascade(raw) {
+  const n = Math.min(Math.floor(raw.length / 4), 7);
+  cascadeCache = Array.from({length:8}, () => null);
+  for (let i = 0; i < n; i++) {
+    cascadeCache[i+1] = new Uint8Array(raw.slice(i*4, i*4+4));
   }
+  return n;
+}
+
+// Read a single block. Checks cascade cache first.
+// block: 0 = config, 1-7 = user blocks.
+async function readBlock(block) {
+  // Check cache first
+  if (cascadeCache && cascadeCache[block]) {
+    console.log('readBlock', block, '→ cache hit');
+    return cascadeCache[block];
+  }
+  // Read from device
+  const raw = await transact(0x90, [0, block]);
+  if (raw.length < 4) throw new Error(`short read: ${raw.length} bytes`);
+  // Cascade dump: device returns all blocks regardless of which was requested.
+  if (raw.length > 4) {
+    const n = cacheCascade(raw);
+    console.log('readBlock', block, '→ cascade dump, cached', n, 'blocks');
+    if (cascadeCache[block]) return cascadeCache[block];
+  }
+  // Single-block response
   return raw.slice(0, 4);
 }
 
+// Read config (block 0). Tries cache, then direct read.
 async function readConfig() {
+  if (cascadeCache && cascadeCache[0]) {
+    console.log('readConfig → cache hit');
+    return cascadeCache[0];
+  }
+  // Block 0 may not respond on some devices — caller should handle error
   const raw = await transact(0x90, [0, 0]);
   if (raw.length < 4) throw new Error(`short config read: ${raw.length} bytes`);
   return raw.slice(0, 4);
 }
 
+// Read all blocks. Tries fast methods first, falls back to individual reads.
 async function readAll() {
+  cascadeCache = null;
+
   // Method 1: 0x9A multi-block-read (vendor-specific, returns all user blocks).
   try {
     console.log('readAll: trying 0x9A...');
     const raw = await transact(0x9A, [0xFE]);
     console.log('readAll: 0x9A returned', raw.length, 'bytes');
     if (raw.length >= 4) {
-      const n = Math.min(Math.floor(raw.length / 4), 7);
-      // Map cascade data to blocks — try both mappings and see which works
-      for (let i = 0; i < n; i++) blocks[i+1] = new Uint8Array(raw.slice(i*4, i*4+4));
-      // Skip config read — device doesn't respond to block 0 reads
-      // Try to get config from the cascade data instead
-      // The cascade might return blocks 0-6 or 1-7 — we'll find out from the user
+      cacheCascade(raw);
+      // Try to read config separately
+      try { blocks[0] = await readConfig(); } catch(e) { console.log('readAll: config read skipped:', e.message); }
+      for (let i = 1; i <= 7; i++) {
+        if (cascadeCache[i]) blocks[i] = cascadeCache[i];
+      }
       return;
     }
   } catch(e) { console.log('readAll: 0x9A failed:', e.message); }
@@ -216,15 +248,18 @@ async function readAll() {
     const raw = await transact(0x90, [0]);
     console.log('readAll: cascade returned', raw.length, 'bytes');
     if (raw.length >= 4) {
-      const n = Math.min(Math.floor(raw.length / 4), 7);
-      for (let i = 0; i < n; i++) blocks[i+1] = new Uint8Array(raw.slice(i*4, i*4+4));
+      cacheCascade(raw);
+      try { blocks[0] = await readConfig(); } catch(e) { console.log('readAll: config read skipped:', e.message); }
+      for (let i = 1; i <= 7; i++) {
+        if (cascadeCache[i]) blocks[i] = cascadeCache[i];
+      }
       return;
     }
   } catch(e) { console.log('readAll: cascade failed:', e.message); }
 
-  // Method 3: individual reads (skip block 0).
+  // Method 3: individual reads (cache populates automatically).
   console.log('readAll: falling back to individual reads');
-  for (let i = 1; i <= 7; i++) blocks[i] = await readBlockRaw(0, i);
+  for (let i = 1; i <= 7; i++) blocks[i] = await readBlock(i);
 }
 
 async function writeBlock(n, data) {
@@ -349,6 +384,7 @@ el('btnConn').onclick = async () => {
 el('btnDisc').onclick = async () => {
   connected = false; render();
   try { if (writer) { writer.releaseLock(); writer = null; } if (port) { await port.close(); port = null; } } catch(e) {}
+  cascadeCache = null;
   for (let b = 0; b < 8; b++) { lastRead[b] = null; setBlock(b, [0,0,0,0]); }
   changed.clear(); render();
   log('Disconnected', 'er');
@@ -384,6 +420,7 @@ el('btnWrite').onclick = async () => {
       lastRead[b] = new Uint8Array(data);
       changed.delete(b); el('r'+b).classList.remove('changed'); el('s'+b).textContent = '✓';
     }
+    cascadeCache = null;
     render();
     log(`Wrote ${toWrite.length} block(s)`, 'ok');
   } catch(e) { log('Write: '+e, 'er'); console.error(e); }
