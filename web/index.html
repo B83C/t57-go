@@ -263,8 +263,8 @@ function renderHistory() {
       const idx=parseInt(entry.dataset.idx);
       const hist=JSON.parse(localStorage.getItem('t57_history')||'[]');
       const e=hist[idx]; if(!e) return;
-      for(let b=0;b<8;b++){setBlock(b,new Uint8Array(e.blocks[b]));lastRead[b]=null;changed.delete(b);el('r'+b).classList.remove('changed');el('s'+b).textContent='✓'}
-      selected.clear();render();
+      for(let b=0;b<8;b++){setBlock(b,new Uint8Array(e.blocks[b]));lastRead[b]=null;changed.delete(b);el('r'+b).classList.remove('changed');el('s'+b).textContent='✓';if(e.blocks[b].some(v=>v!==0)){selected.add(b);el('cb'+b).checked=true}else{selected.delete(b);el('cb'+b).checked=false}}
+      render();
       log('Restored from '+new Date(e.time).toLocaleString(),'ok');
     };
   });
@@ -306,7 +306,7 @@ el('btnRead').onclick=async()=>{
     hist.unshift({time:new Date().toISOString(),blocks:blocks.map(b=>Array.from(b))});
     if(hist.length>20)hist.length=20;
     localStorage.setItem('t57_history',JSON.stringify(hist));
-    if(historyOpen)renderHistory();
+    renderHistory();
     let cnt=0;
     for(let b=0;b<8;b++){
       const z=blocks[b].every(v=>v===0);
@@ -333,7 +333,7 @@ el('btnWrite').onclick=async()=>{
     hist.unshift({time:new Date().toISOString(),blocks:blocks.map(b=>Array.from(b))});
     if(hist.length>20)hist.length=20;
     localStorage.setItem('t57_history',JSON.stringify(hist));
-    if(historyOpen)renderHistory();
+    renderHistory();
     for(const b of toWrite)blocks[b]=userVals[b];
     for(const b of toWrite)setBlock(b,blocks[b]);
     for(const b of toWrite){await writeBlock(b,blocks[b]);lastRead[b]=new Uint8Array(blocks[b]);changed.delete(b);el('r'+b).classList.remove('changed');el('s'+b).textContent='✓'}
