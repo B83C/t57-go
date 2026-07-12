@@ -301,6 +301,12 @@ el('btnRead').onclick=async()=>{
     const prev=blocks.map(b=>new Uint8Array(b));
     log('Reading…','t');
     await readAll();
+    // Save read to history
+    const hist=JSON.parse(localStorage.getItem('t57_history')||'[]');
+    hist.unshift({time:new Date().toISOString(),blocks:blocks.map(b=>Array.from(b))});
+    if(hist.length>20)hist.length=20;
+    localStorage.setItem('t57_history',JSON.stringify(hist));
+    if(historyOpen)renderHistory();
     let cnt=0;
     for(let b=0;b<8;b++){
       const z=blocks[b].every(v=>v===0);
