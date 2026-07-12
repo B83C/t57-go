@@ -120,10 +120,8 @@ func readAllCmd(m *model) tea.Cmd {
 		var err error
 		out, err = m.client.ReadAllRaw()
 		if err != nil {
-			cfg, e2 := m.client.ReadConfig()
-			if e2 == nil {
-				out[0] = cfg.LEBytes()
-			}
+			// ReadAllRaw handles all methods internally. Fallback:
+			// try individual block reads (1-7), skip config.
 			blks, e2 := m.client.ReadBlocks(1, 7)
 			if e2 != nil {
 				return readDoneMsg{err: e2}
@@ -131,11 +129,6 @@ func readAllCmd(m *model) tea.Cmd {
 			for i, b := range blks {
 				out[i+1] = b
 			}
-		}
-		// Debug: log read results
-		for bi := 0; bi < 8; bi++ {
-			fmt.Fprintf(os.Stderr, "DBG block %d: %02X %02X %02X %02X\n",
-				bi, out[bi][0], out[bi][1], out[bi][2], out[bi][3])
 		}
 		return readDoneMsg{blocks: out}
 	}

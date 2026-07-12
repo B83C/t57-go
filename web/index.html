@@ -180,6 +180,16 @@ async function readAll() {
   let raw;
   try {
     raw = await transact(0x9A, [0xFE]);
+    // Some firmware returns all-identical blocks — skip to cascade.
+    if (raw.length > 4) {
+      let allSame = true;
+      for (let i = 4; i < raw.length; i += 4) {
+        if (raw[i] !== raw[0] || raw[i+1] !== raw[1] || raw[i+2] !== raw[2] || raw[i+3] !== raw[3]) {
+          allSame = false; break;
+        }
+      }
+      if (allSame) throw new Error('0x9A returned garbage, fallback to cascade');
+    }
   } catch(e) {
     raw = await transact(0x90, [0]);
   }

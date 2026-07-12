@@ -229,71 +229,66 @@ func (c *Client) ReadConfig() (Config, error) {
 
 // ReadAllRaw reads all user blocks in one shot.
 // Strategy: try the 0x9A multi-block-read command first; if that
-// fails (unknown command), fall back to a page-only T5557Read (1
-// data byte = cascade dump); if that also fails, read individually.
+// fails or returns all-identical data (unreliable on some firmware),
+// fall back to a page-only T5557Read (1 data byte = cascade dump);
+// if that also fails, read individually. Block 0 (config) is skipped
+// because the device returns the cascade even for block 0 reads.
 func (c *Client) ReadAllRaw() ([8][4]byte, error) {
 	var out [8][4]byte
 
 	// Method 1: 0x9A multi-block-read command (vendor-specific).
+	// Some firmware versions return all-identical blocks, so we check
+	// for that and fall through to the reliable cascade method.
 	scratch, err := c.Transact(Command(0x9A), []byte{0xFE})
 	if err == nil && len(scratch) >= 4 {
-		n := len(scratch) / BlockSize
-		if n > 7 {
-			n = 7
-		}
-		debugf("ReadAllRaw method1 scratch=%d bytes n=%d", len(scratch), n)
-		for i := 0; i < n; i++ {
-			debugf("  scratch[%d:%d] = %02X %02X %02X %02X",
-				i*4, i*4+4, scratch[i*4], scratch[i*4+1], scratch[i*4+2], scratch[i*4+3])
-			copy(out[i+1][:], scratch[i*4:i*4+4])
-		}
-		cfg, err := c.ReadConfig()
-		if err == nil {
-			out[0] = cfg.LEBytes()
+		// Quick sanity: if every 4-byte slice is the same, the
+		// device probably doesn't implement 0x9A properly.
+		allSame := true
+		if len(scratch) > 4 {
+			for i := 4; i < len(scratch); i += 4 {
+				if scratch[i] != scratch[0] || scratch[i+1] != scratch[1] ||
+					scratch[i+2] != scratch[2] || scratch[i+3] != scratch[3] {
+					allSame = false
+					break
+				}
+			}
 		} else {
-			debugf("  config read: %v", err)
+			allSame = false
 		}
-		return out, nil
+		if !allSame {
+			n := len(scratch) / BlockSize
+			if n > 7 {
+				n = 7
+			}
+			for i := 0; i < n; i++ {
+				copy(out[i+1][:], scratch[i*4:i*4+4])
+			}
+			return out, nil
+		}
+		debugf("ReadAllRaw: 0x9A returned all-identical data, falling through")
 	}
-	debugf("ReadAllRaw method1: %v", err)
 
 	// Method 2: page-only read (1 data byte) — triggers cascade dump.
+	// This is the most reliable method.
 	scratch, err = c.Transact(CmdT5557Read, []byte{byte(Page0)})
 	if err == nil {
 		n := len(scratch) / BlockSize
 		if n > 7 {
 			n = 7
 		}
-		debugf("ReadAllRaw method2 scratch=%d bytes n=%d", len(scratch), n)
 		for i := 0; i < n; i++ {
-			debugf("  scratch[%d:%d] = %02X %02X %02X %02X",
-				i*4, i*4+4, scratch[i*4], scratch[i*4+1], scratch[i*4+2], scratch[i*4+3])
 			copy(out[i+1][:], scratch[i*4:i*4+4])
-		}
-		cfg, err := c.ReadConfig()
-		if err == nil {
-			out[0] = cfg.LEBytes()
-		} else {
-			debugf("  config read: %v", err)
 		}
 		return out, nil
 	}
-	debugf("ReadAllRaw method2: %v", err)
 
 	// Method 3: fall back to individual reads.
-	debugf("ReadAllRaw method3 individual reads")
 	for bi := 1; bi <= 7; bi++ {
 		b, err := c.ReadBlock(uint8(bi))
 		if err != nil {
 			return out, err
 		}
 		out[bi] = b
-		debugf("  ReadBlock(%d) = %02X %02X %02X %02X",
-			bi, b[0], b[1], b[2], b[3])
-	}
-	cfg, err := c.ReadConfig()
-	if err == nil {
-		out[0] = cfg.LEBytes()
 	}
 	return out, nil
 }
