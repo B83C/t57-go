@@ -281,11 +281,12 @@ func (c *Client) ReadAllRaw() ([8][4]byte, error) {
 		return out, nil
 	}
 
-	// Method 3: fall back to individual reads.
+	// Method 3: fall back to individual reads. Stop at first failure
+	// (block 7 or later may not be readable on some cards).
 	for bi := 1; bi <= 7; bi++ {
 		b, err := c.ReadBlock(uint8(bi))
 		if err != nil {
-			return out, err
+			break
 		}
 		out[bi] = b
 	}

@@ -111,14 +111,16 @@ func connectCmd(a *args) tea.Cmd {
 	}
 }
 
+func allZero(b [4]byte) bool {
+	return b[0] == 0 && b[1] == 0 && b[2] == 0 && b[3] == 0
+}
+
 func readAllCmd(m *model) tea.Cmd {
 	return func() tea.Msg {
 		var out [8][4]byte
 		var err error
 		out, err = m.client.ReadAllRaw()
 		if err != nil {
-			// ReadAllRaw handles all methods internally. Fallback:
-			// try individual block reads (1-7), skip config.
 			blks, e2 := m.client.ReadBlocks(1, 7)
 			if e2 != nil {
 				return readDoneMsg{err: e2}
@@ -236,7 +238,13 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.changed[i] = false
 			}
 			m.pending = false
-			m.status = "Read 8 blocks"
+			cnt := 0
+			for _, b := range m.blocks {
+				if !allZero(b) {
+					cnt++
+				}
+			}
+			m.status = fmt.Sprintf("Read %d blocks", cnt)
 		}
 		return m, nil
 
