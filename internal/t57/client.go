@@ -231,20 +231,30 @@ func (c *Client) ReadConfig() (Config, error) {
 // Strategy: try the 0x9A multi-block-read command first; if that
 // fails or returns all-identical data (unreliable on some firmware),
 // fall back to a page-only T5557Read (1 data byte = cascade dump);
-// if that also fails, read individually. Block 0 (config) is skipped
-// because the device returns the cascade even for block 0 reads.
+// if that also fails, read individually. Block 0 and 7 are tried
+// individually at the end — single-block responses are accepted,
+// cascade responses are ignored.
 func (c *Client) ReadAllRaw() ([8][4]byte, error) {
 	var out [8][4]byte
+
+	// tryCascade fills blocks 1..n from a cascade response.
+	tryCascade := func(data []byte) {
+		n := len(data) / BlockSize
+		if n > 7 {
+			n = 7
+		}
+		for i := 0; i < n; i++ {
+			copy(out[i+1][:], data[i*4:i*4+4])
+		}
+	}
 
 	// Method 1: 0x9A multi-block-read command (vendor-specific).
 	// Some firmware versions return all-identical blocks, so we check
 	// for that and fall through to the reliable cascade method.
 	scratch, err := c.Transact(Command(0x9A), []byte{0xFE})
 	if err == nil && len(scratch) >= 4 {
-		// Quick sanity: if every 4-byte slice is the same, the
-		// device probably doesn't implement 0x9A properly.
-		allSame := true
-		if len(scratch) > 4 {
+		allSame := len(scratch) > 4
+		if allSame {
 			for i := 4; i < len(scratch); i += 4 {
 				if scratch[i] != scratch[0] || scratch[i+1] != scratch[1] ||
 					scratch[i+2] != scratch[2] || scratch[i+3] != scratch[3] {
@@ -252,43 +262,40 @@ func (c *Client) ReadAllRaw() ([8][4]byte, error) {
 					break
 				}
 			}
-		} else {
-			allSame = false
 		}
 		if !allSame {
-			n := len(scratch) / BlockSize
-			if n > 7 {
-				n = 7
-			}
-			for i := 0; i < n; i++ {
-				copy(out[i+1][:], scratch[i*4:i*4+4])
-			}
-			return out, nil
+			tryCascade(scratch)
+			goto trySingles
 		}
 	}
 
 	// Method 2: page-only read (1 data byte) — triggers cascade dump.
-	// This is the most reliable method.
 	scratch, err = c.Transact(CmdT5557Read, []byte{byte(Page0)})
 	if err == nil {
-		n := len(scratch) / BlockSize
-		if n > 7 {
-			n = 7
-		}
-		for i := 0; i < n; i++ {
-			copy(out[i+1][:], scratch[i*4:i*4+4])
-		}
-		return out, nil
+		tryCascade(scratch)
+		goto trySingles
 	}
 
-	// Method 3: fall back to individual reads. Stop at first failure
-	// (block 7 or later may not be readable on some cards).
+	// Method 3: fall back to individual reads.
 	for bi := 1; bi <= 7; bi++ {
 		b, err := c.ReadBlock(uint8(bi))
 		if err != nil {
 			break
 		}
 		out[bi] = b
+	}
+
+trySingles:
+	// Try block 0 and 7 individually — only accept single-block (4 bytes).
+	// Cascade cards return cascade data for these, which we skip.
+	for _, bi := range []byte{0, 7} {
+		if out[bi] != [BlockSize]byte{} {
+			continue
+		}
+		raw, err := c.Transact(CmdT5557Read, []byte{0, bi})
+		if err == nil && len(raw) == BlockSize {
+			copy(out[bi][:], raw)
+		}
 	}
 	return out, nil
 }

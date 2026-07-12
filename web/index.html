@@ -199,7 +199,7 @@ async function readAll() {
     const off = i * 4;
     blocks[i+1] = new Uint8Array([raw[off], raw[off+1], raw[off+2], raw[off+3]]);
   }
-  // For cards that don't cascade, read remaining blocks individually.
+  // Read remaining user blocks individually (non-cascade cards).
   if (n < 6) {
     for (let i = n + 1; i <= 6; i++) {
       try {
@@ -210,6 +210,15 @@ async function readAll() {
         break;
       }
     }
+  }
+  // Try block 0 (config) and 7 — only use single-block responses.
+  // Cascade cards return cascade data for these, which we ignore.
+  for (const b of [0, 7]) {
+    if (blocks[b][0] !== 0 || blocks[b][1] !== 0 || blocks[b][2] !== 0 || blocks[b][3] !== 0) continue;
+    try {
+      const r = await transact(0x90, [0, b]);
+      if (r.length === 4) blocks[b] = new Uint8Array([r[0], r[1], r[2], r[3]]);
+    } catch(e) {}
   }
 }
 
