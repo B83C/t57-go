@@ -65,6 +65,9 @@ var globalArgs *args
 
 func runTUI(c *args) error {
 	globalArgs = c
+	t57.DebugLog = func(msg string, args ...interface{}) {
+		fmt.Fprintf(os.Stderr, "T57: "+msg+"\n", args...)
+	}
 	p := tea.NewProgram(initialModel(c))
 	if _, err := p.Run(); err != nil {
 		return err
@@ -117,8 +120,6 @@ func readAllCmd(m *model) tea.Cmd {
 		var err error
 		out, err = m.client.ReadAllRaw()
 		if err != nil {
-			// Fall back to individual reads. Config read may fail
-			// (some devices don't support block 0 reads) — that's OK.
 			cfg, e2 := m.client.ReadConfig()
 			if e2 == nil {
 				out[0] = cfg.LEBytes()
@@ -130,6 +131,11 @@ func readAllCmd(m *model) tea.Cmd {
 			for i, b := range blks {
 				out[i+1] = b
 			}
+		}
+		// Debug: log read results
+		for bi := 0; bi < 8; bi++ {
+			fmt.Fprintf(os.Stderr, "DBG block %d: %02X %02X %02X %02X\n",
+				bi, out[bi][0], out[bi][1], out[bi][2], out[bi][3])
 		}
 		return readDoneMsg{blocks: out}
 	}

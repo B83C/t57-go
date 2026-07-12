@@ -241,15 +241,21 @@ func (c *Client) ReadAllRaw() ([8][4]byte, error) {
 		if n > 7 {
 			n = 7
 		}
+		debugf("ReadAllRaw method1 scratch=%d bytes n=%d", len(scratch), n)
 		for i := 0; i < n; i++ {
+			debugf("  scratch[%d:%d] = %02X %02X %02X %02X",
+				i*4, i*4+4, scratch[i*4], scratch[i*4+1], scratch[i*4+2], scratch[i*4+3])
 			copy(out[i+1][:], scratch[i*4:i*4+4])
 		}
 		cfg, err := c.ReadConfig()
 		if err == nil {
 			out[0] = cfg.LEBytes()
+		} else {
+			debugf("  config read: %v", err)
 		}
 		return out, nil
 	}
+	debugf("ReadAllRaw method1: %v", err)
 
 	// Method 2: page-only read (1 data byte) — triggers cascade dump.
 	scratch, err = c.Transact(CmdT5557Read, []byte{byte(Page0)})
@@ -258,23 +264,32 @@ func (c *Client) ReadAllRaw() ([8][4]byte, error) {
 		if n > 7 {
 			n = 7
 		}
+		debugf("ReadAllRaw method2 scratch=%d bytes n=%d", len(scratch), n)
 		for i := 0; i < n; i++ {
+			debugf("  scratch[%d:%d] = %02X %02X %02X %02X",
+				i*4, i*4+4, scratch[i*4], scratch[i*4+1], scratch[i*4+2], scratch[i*4+3])
 			copy(out[i+1][:], scratch[i*4:i*4+4])
 		}
 		cfg, err := c.ReadConfig()
 		if err == nil {
 			out[0] = cfg.LEBytes()
+		} else {
+			debugf("  config read: %v", err)
 		}
 		return out, nil
 	}
+	debugf("ReadAllRaw method2: %v", err)
 
 	// Method 3: fall back to individual reads.
+	debugf("ReadAllRaw method3 individual reads")
 	for bi := 1; bi <= 7; bi++ {
 		b, err := c.ReadBlock(uint8(bi))
 		if err != nil {
 			return out, err
 		}
 		out[bi] = b
+		debugf("  ReadBlock(%d) = %02X %02X %02X %02X",
+			bi, b[0], b[1], b[2], b[3])
 	}
 	cfg, err := c.ReadConfig()
 	if err == nil {
