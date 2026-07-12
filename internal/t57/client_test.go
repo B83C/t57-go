@@ -227,6 +227,55 @@ func TestClientFirmwareVersion(t *testing.T) {
 	}
 }
 
+func TestClientReadAllRawCascadeWithConfigError(t *testing.T) {
+	m := mock.New()
+	// 0x9A returns 24 bytes = 6 blocks cascade (blocks 1-6).
+	d1 := byte(0xA6); d2 := byte(0x44); d3 := byte(0xD9); d4 := byte(0xFB)
+	d5 := byte(0x0B); d6 := byte(0x34); d7 := byte(0xD2); d8 := byte(0x4F)
+	d9 := byte(0x02); d10 := byte(0x01); d11 := byte(0x10); d12 := byte(0x4F)
+	d13 := byte(0x63); d14 := byte(0x63); d15 := byte(0xF0); d16 := byte(0x4F)
+	d17 := byte(0x02); d18 := byte(0x01); d19 := byte(0xF0); d20 := byte(0xA0)
+	d21 := byte(0xFF); d22 := byte(0x61); d23 := byte(0x8A); d24 := byte(0xC6)
+	m.PushResponse(buildResponse(0, 0x00,
+		d1, d2, d3, d4, d5, d6, d7, d8, d9, d10, d11, d12,
+		d13, d14, d15, d16, d17, d18, d19, d20, d21, d22, d23, d24))
+	// Config read (block 0) returns error — device doesn't support it.
+	m.PushResponse(buildResponse(0, 0x01, 0x89))
+
+	c := t57.NewClient(m).WithRetries(0)
+	out, err := c.ReadAllRaw()
+	if err != nil {
+		t.Fatalf("ReadAllRaw: %v", err)
+	}
+	want := func(b0, b1, b2, b3 byte) [t57.BlockSize]byte {
+		return [t57.BlockSize]byte{b0, b1, b2, b3}
+	}
+	if out[0] != want(0, 0, 0, 0) {
+		t.Fatalf("block 0 = % X, want 00000000 (unreadable, should be zero)", out[0])
+	}
+	if out[1] != want(d1, d2, d3, d4) {
+		t.Fatalf("block 1 = % X, want % X", out[1], want(d1, d2, d3, d4))
+	}
+	if out[2] != want(d5, d6, d7, d8) {
+		t.Fatalf("block 2 = % X, want % X", out[2], want(d5, d6, d7, d8))
+	}
+	if out[3] != want(d9, d10, d11, d12) {
+		t.Fatalf("block 3 = % X, want % X", out[3], want(d9, d10, d11, d12))
+	}
+	if out[4] != want(d13, d14, d15, d16) {
+		t.Fatalf("block 4 = % X, want % X", out[4], want(d13, d14, d15, d16))
+	}
+	if out[5] != want(d17, d18, d19, d20) {
+		t.Fatalf("block 5 = % X, want % X", out[5], want(d17, d18, d19, d20))
+	}
+	if out[6] != want(d21, d22, d23, d24) {
+		t.Fatalf("block 6 = % X, want % X", out[6], want(d21, d22, d23, d24))
+	}
+	if out[7] != want(0, 0, 0, 0) {
+		t.Fatalf("block 7 = % X, want 00000000 (unread)", out[7])
+	}
+}
+
 func TestClientEmptyReadIsError(t *testing.T) {
 	m := mock.New()
 	// Don't push any data; the device will never respond.

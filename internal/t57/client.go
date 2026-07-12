@@ -277,10 +277,9 @@ func (c *Client) ReadAllRaw() ([8][4]byte, error) {
 		out[bi] = b
 	}
 	cfg, err := c.ReadConfig()
-	if err != nil {
-		return out, err
+	if err == nil {
+		out[0] = cfg.LEBytes()
 	}
-	out[0] = cfg.LEBytes()
 	return out, nil
 }
 

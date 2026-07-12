@@ -113,22 +113,20 @@ func connectCmd(a *args) tea.Cmd {
 
 func readAllCmd(m *model) tea.Cmd {
 	return func() tea.Msg {
-		// Try ReadAllRaw first — some T5557 cards dump all 32
-		// bytes when reading block 0, which avoids 8 round-trips.
 		var out [8][4]byte
 		var err error
 		out, err = m.client.ReadAllRaw()
 		if err != nil {
-			// Fall back to individual reads.
+			// Fall back to individual reads. Config read may fail
+			// (some devices don't support block 0 reads) — that's OK.
 			cfg, e2 := m.client.ReadConfig()
-			if e2 != nil {
-				return readDoneMsg{err: e2}
+			if e2 == nil {
+				out[0] = cfg.LEBytes()
 			}
 			blks, e2 := m.client.ReadBlocks(1, 7)
 			if e2 != nil {
 				return readDoneMsg{err: e2}
 			}
-			out[0] = cfg.LEBytes()
 			for i, b := range blks {
 				out[i+1] = b
 			}
