@@ -121,7 +121,7 @@ func readAllCmd(m *model) tea.Cmd {
 		var err error
 		out, err = m.client.ReadAllRaw()
 		if err != nil {
-			blks, e2 := m.client.ReadBlocks(1, 7)
+			blks, e2 := m.client.ReadBlocks(1, 6)
 			if e2 != nil {
 				return readDoneMsg{err: e2}
 			}

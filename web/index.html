@@ -200,8 +200,8 @@ async function readAll() {
     blocks[i+1] = new Uint8Array([raw[off], raw[off+1], raw[off+2], raw[off+3]]);
   }
   // For cards that don't cascade, read remaining blocks individually.
-  if (n < 7) {
-    for (let i = n + 1; i <= 7; i++) {
+  if (n < 6) {
+    for (let i = n + 1; i <= 6; i++) {
       try {
         const r = await transact(0x90, [0, i]);
         if (r.length >= 4) blocks[i] = new Uint8Array([r[0], r[1], r[2], r[3]]);
@@ -340,7 +340,8 @@ el('btnRead').onclick = async () => {
       if (!z) cnt++;
       setBlock(b, blocks[b]);
       lastRead[b] = new Uint8Array(blocks[b]);
-      changed.delete(b); el('r'+b).classList.remove('changed'); el('s'+b).textContent = '✓';
+      changed.delete(b); el('r'+b).classList.remove('changed');
+      el('s'+b).textContent = z ? '—' : '✓';
     }
     render();
     log(`Read ${cnt} blocks`, 'ok');
