@@ -62,9 +62,10 @@
     <button id="btnRead" class="primary" disabled>Read All</button>
     <button id="btnWrite" class="danger" disabled>Write</button>
     <button id="btnDef" disabled>Default Cfg</button>
-    <button id="btnBeep" disabled>Beep</button>
+     <button id="btnBeep" disabled>Beep</button>
     <button id="btnSave" disabled>Save</button>
     <button id="btnLoad" disabled>Load</button>
+    <button id="btnRestore" disabled>Restore</button>
   </div>
 
   <div class="grid" id="grid"></div>
@@ -147,6 +148,7 @@ let busy = false;
 const blocks = Array.from({length:8}, () => new Uint8Array(4));
 const lastRead = Array.from({length:8}, () => null);
 const changed = new Set();
+const selected = new Set();
 
 async function drain() {
   try {
@@ -242,6 +244,11 @@ function grid() {
   const g = el('grid'); g.innerHTML = '';
   for (let b = 0; b < 8; b++) {
     const r = document.createElement('div'); r.className = 'row'; r.id = 'r'+b;
+    const cb = document.createElement('input'); cb.type = 'checkbox'; cb.id = 'cb'+b;
+    cb.style.margin = '0 4px 0 0'; cb.style.accentColor = '#238636';
+    cb.onchange = () => { selected[cb.checked ? 'add' : 'delete'](b); render(); };
+    r.appendChild(cb);
+    // Auto-check on read/write/load
     const l = document.createElement('span'); l.className = 'blk';
     l.textContent = b === 0 ? 'Config' : 'Block '+b;
     r.appendChild(l);
@@ -280,6 +287,7 @@ function onEdit(b) {
   const was = lastRead[b];
   if (was && !bytesEqual(cur, was)) {
     changed.add(b); el('r'+b).classList.add('changed'); el('s'+b).textContent = 'CHANGED';
+    selected.add(b); el('cb'+b).checked = true;
   } else {
     changed.delete(b); el('r'+b).classList.remove('changed'); el('s'+b).textContent = '';
   }
@@ -299,6 +307,7 @@ function render() {
   el('btnBeep').disabled = !connected || busy;
   el('btnSave').disabled = !connected || busy;
   el('btnLoad').disabled = !connected || busy;
+  el('btnRestore').disabled = !connected || busy;
 }
 
 function log(msg, cls) {
@@ -333,7 +342,7 @@ el('btnDisc').onclick = async () => {
   connected = false; render();
   try { if (writer) { writer.releaseLock(); writer = null; } if (port) { await port.close(); port = null; } } catch(e) {}
   for (let b = 0; b < 8; b++) { lastRead[b] = null; setBlock(b, [0,0,0,0]); }
-  changed.clear(); render();
+  changed.clear(); selected.clear(); render();
   log('Disconnected', 'er');
 };
 
@@ -360,6 +369,9 @@ el('btnRead').onclick = async () => {
         changed.delete(b); el('r'+b).classList.remove('changed');
         el('s'+b).textContent = z ? '—' : '✓';
       }
+      // Auto-check blocks with data
+      el('cb'+b).checked = !z;
+      if (!z) selected.add(b); else selected.delete(b);
     }
     render();
     log(`Read ${cnt} blocks`, 'ok');
@@ -368,12 +380,15 @@ el('btnRead').onclick = async () => {
 };
 
 el('btnWrite').onclick = async () => {
-  const toWrite = [...changed];
-  if (toWrite.length === 0) { log('Nothing changed', 't'); return; }
+  const toWrite = [...selected];
+  if (toWrite.length === 0) { log('No blocks selected', 't'); return; }
   if (!confirm(`Write ${toWrite.length} block(s): ${toWrite.join(',')}?`)) { log('Cancelled', 't'); return; }
   if (busy) return;
   busy = true; render();
   try {
+    // Save backup before writing
+    const backup = blocks.map(b => Array.from(b));
+    localStorage.setItem('t57_autobackup', JSON.stringify(backup));
     for (const b of toWrite) {
       const data = getBlock(b);
       await writeBlock(b, data);
@@ -381,7 +396,7 @@ el('btnWrite').onclick = async () => {
       changed.delete(b); el('r'+b).classList.remove('changed'); el('s'+b).textContent = '✓';
     }
     render();
-    log(`Wrote ${toWrite.length} block(s)`, 'ok');
+    log(`Wrote ${toWrite.length} block(s), backup saved`, 'ok');
   } catch(e) { log('Write: '+e, 'er'); console.error(e); }
   busy = false; render();
 };
@@ -389,6 +404,7 @@ el('btnWrite').onclick = async () => {
 el('btnDef').onclick = () => {
   const data = new Uint8Array([0x00, 0x08, 0x80, 0xE8]);
   setBlock(0, data); changed.add(0); el('r0').classList.add('changed'); el('s0').textContent = 'CHANGED';
+  selected.add(0); el('cb0').checked = true;
   render();
   log('Config set to 000880E8 — Write to apply', 'ok');
 };
@@ -416,9 +432,28 @@ el('btnLoad').onclick = () => {
       lastRead[b] = null;
       changed.delete(b); el('r'+b).classList.remove('changed'); el('s'+b).textContent = '';
     }
+    selected.clear();
     render();
     log('Snapshot loaded', 'ok');
   } catch(e) { log('Load: '+e, 'er'); }
+};
+
+el('btnRestore').onclick = () => {
+  const raw = localStorage.getItem('t57_autobackup');
+  if (!raw) { log('No backup found', 'er'); return; }
+  if (!confirm('Restore blocks from last write backup?')) { log('Cancelled', 't'); return; }
+  try {
+    const data = JSON.parse(raw);
+    for (let b = 0; b < 8; b++) {
+      setBlock(b, new Uint8Array(data[b]));
+      lastRead[b] = null;
+      changed.delete(b); el('r'+b).classList.remove('changed');
+      el('s'+b).textContent = '✓';
+    }
+    selected.clear();
+    render();
+    log('Backup restored', 'ok');
+  } catch(e) { log('Restore: '+e, 'er'); }
 };
 
 grid();

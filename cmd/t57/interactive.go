@@ -135,6 +135,10 @@ func readAllCmd(m *model) tea.Cmd {
 
 func writeAllCmd(m *model) tea.Cmd {
 	return func() tea.Msg {
+		// Save auto-backup before writing
+		if err := saveAutoBackup(m.blocks); err != nil {
+			fmt.Fprintf(os.Stderr, "backup failed: %v\n", err)
+		}
 		// Write all 8 blocks (config + user) to the device.
 		for bi := 0; bi < 8; bi++ {
 			if bi == 0 {
@@ -156,6 +160,10 @@ func writeAllCmd(m *model) tea.Cmd {
 
 func writeChangedCmd(m *model) tea.Cmd {
 	return func() tea.Msg {
+		// Save auto-backup before writing
+		if err := saveAutoBackup(m.blocks); err != nil {
+			fmt.Fprintf(os.Stderr, "backup failed: %v\n", err)
+		}
 		// Snapshot changed indices so the goroutine doesn't race.
 		var toWrite []struct{ idx int; data [4]byte }
 		for bi := 0; bi < 8; bi++ {
@@ -304,6 +312,19 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			m.status = "Writing all 8 blocks…"
 			return m, writeAllCmd(&m)
+		case "U":
+			blocks, err := loadAutoBackup()
+			if err != nil {
+				m.status = "Restore: " + err.Error()
+			} else {
+				m.blocks = blocks
+				for i := range m.changed {
+					m.changed[i] = false
+				}
+				m.pending = false
+				m.status = "Auto-backup restored"
+			}
+			return m, nil
 		case "s":
 			if err := saveSnapshot(m.blocks); err != nil {
 				m.status = "Save: " + err.Error()
@@ -440,7 +461,7 @@ func (m model) View() string {
 	}
 
 	b.WriteString("\n")
-	b.WriteString("  [R]ead  [W]rite  [D]efault config  [U]ndo  [Q]uit\n")
+	b.WriteString("  [R]ead  [W]rite  [D]efault  [u]ndo read  [U]restore backup  S/s[S]napshot  [Q]uit\n")
 	b.WriteString(fmt.Sprintf("  %s\n", m.status))
 	return b.String()
 }
@@ -486,6 +507,49 @@ func snapshotPath() (string, error) {
 		return "", err
 	}
 	return filepath.Join(dir, "snapshot.bin"), nil
+}
+
+func saveAutoBackup(blocks [8][4]byte) error {
+	path, err := autoBackupPath()
+	if err != nil {
+		return err
+	}
+	data := make([]byte, 32)
+	for bi := 0; bi < 8; bi++ {
+		copy(data[bi*4:], blocks[bi][:])
+	}
+	return os.WriteFile(path, data, 0644)
+}
+
+func loadAutoBackup() ([8][4]byte, error) {
+	var out [8][4]byte
+	path, err := autoBackupPath()
+	if err != nil {
+		return out, err
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return out, err
+	}
+	if len(data) != 32 {
+		return out, fmt.Errorf("autobackup: expected 32 bytes, got %d", len(data))
+	}
+	for bi := 0; bi < 8; bi++ {
+		copy(out[bi][:], data[bi*4:bi*4+4])
+	}
+	return out, nil
+}
+
+func autoBackupPath() (string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", err
+	}
+	dir := filepath.Join(home, ".local", "share", "t57")
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return "", err
+	}
+	return filepath.Join(dir, "autobackup.bin"), nil
 }
 
 func hexVal(b byte) int {
