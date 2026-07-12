@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -135,9 +136,12 @@ func readAllCmd(m *model) tea.Cmd {
 
 func writeAllCmd(m *model) tea.Cmd {
 	return func() tea.Msg {
-		// Save auto-backup before writing
-		if err := saveAutoBackup(m.blocks); err != nil {
-			fmt.Fprintf(os.Stderr, "backup failed: %v\n", err)
+		// Read device state before writing and save to history
+		prev, err := m.client.ReadAllRaw()
+		if err == nil {
+			saveHistoryEntry(prev)
+		} else {
+			fmt.Fprintf(os.Stderr, "pre-read failed: %v\n", err)
 		}
 		// Write all 8 blocks (config + user) to the device.
 		for bi := 0; bi < 8; bi++ {
@@ -160,9 +164,12 @@ func writeAllCmd(m *model) tea.Cmd {
 
 func writeChangedCmd(m *model) tea.Cmd {
 	return func() tea.Msg {
-		// Save auto-backup before writing
-		if err := saveAutoBackup(m.blocks); err != nil {
-			fmt.Fprintf(os.Stderr, "backup failed: %v\n", err)
+		// Read device state before writing and save to history
+		prev, err := m.client.ReadAllRaw()
+		if err == nil {
+			saveHistoryEntry(prev)
+		} else {
+			fmt.Fprintf(os.Stderr, "pre-read failed: %v\n", err)
 		}
 		// Snapshot changed indices so the goroutine doesn't race.
 		var toWrite []struct{ idx int; data [4]byte }
@@ -313,16 +320,16 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.status = "Writing all 8 blocks…"
 			return m, writeAllCmd(&m)
 		case "U":
-			blocks, err := loadAutoBackup()
-			if err != nil {
-				m.status = "Restore: " + err.Error()
+			hist, err := loadHistory()
+			if err != nil || len(hist) == 0 {
+				m.status = "No history"
 			} else {
-				m.blocks = blocks
+				m.blocks = hist[0].Blocks
 				for i := range m.changed {
 					m.changed[i] = false
 				}
 				m.pending = false
-				m.status = "Auto-backup restored"
+				m.status = fmt.Sprintf("Restored from %s", hist[0].Time)
 			}
 			return m, nil
 		case "s":
@@ -509,38 +516,7 @@ func snapshotPath() (string, error) {
 	return filepath.Join(dir, "snapshot.bin"), nil
 }
 
-func saveAutoBackup(blocks [8][4]byte) error {
-	path, err := autoBackupPath()
-	if err != nil {
-		return err
-	}
-	data := make([]byte, 32)
-	for bi := 0; bi < 8; bi++ {
-		copy(data[bi*4:], blocks[bi][:])
-	}
-	return os.WriteFile(path, data, 0644)
-}
-
-func loadAutoBackup() ([8][4]byte, error) {
-	var out [8][4]byte
-	path, err := autoBackupPath()
-	if err != nil {
-		return out, err
-	}
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return out, err
-	}
-	if len(data) != 32 {
-		return out, fmt.Errorf("autobackup: expected 32 bytes, got %d", len(data))
-	}
-	for bi := 0; bi < 8; bi++ {
-		copy(out[bi][:], data[bi*4:bi*4+4])
-	}
-	return out, nil
-}
-
-func autoBackupPath() (string, error) {
+func historyPath() (string, error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return "", err
@@ -549,7 +525,47 @@ func autoBackupPath() (string, error) {
 	if err := os.MkdirAll(dir, 0755); err != nil {
 		return "", err
 	}
-	return filepath.Join(dir, "autobackup.bin"), nil
+	return filepath.Join(dir, "history.json"), nil
+}
+
+type historyEntry struct {
+	Time   string      `json:"time"`
+	Blocks [8][4]byte `json:"blocks"`
+}
+
+func saveHistoryEntry(blocks [8][4]byte) error {
+	path, err := historyPath()
+	if err != nil {
+		return err
+	}
+	var hist []historyEntry
+	data, err := os.ReadFile(path)
+	if err == nil {
+		json.Unmarshal(data, &hist)
+	}
+	entry := historyEntry{Time: time.Now().Format(time.RFC3339), Blocks: blocks}
+	hist = append([]historyEntry{entry}, hist...)
+	if len(hist) > 20 {
+		hist = hist[:20]
+	}
+	out, _ := json.Marshal(hist)
+	return os.WriteFile(path, out, 0644)
+}
+
+func loadHistory() ([]historyEntry, error) {
+	path, err := historyPath()
+	if err != nil {
+		return nil, err
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	var hist []historyEntry
+	if err := json.Unmarshal(data, &hist); err != nil {
+		return nil, err
+	}
+	return hist, nil
 }
 
 func hexVal(b byte) int {

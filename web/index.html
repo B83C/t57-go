@@ -6,7 +6,7 @@
 <title>T57 RFID — Hex Editor</title>
 <style>
   *,*::before,*::after{box-sizing:border-box}
-  body{background:#0d1117;color:#e6edf3;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;margin:0;padding:16px;max-width:660px;margin:0 auto}
+  body{background:#0d1117;color:#e6edf3;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;margin:0;padding:16px;max-width:720px;margin:0 auto}
   h1{font-size:1.1rem;margin:0;display:inline}
   .sub{color:#8b949e;font-size:.8rem;margin:2px 0 8px}
 
@@ -14,7 +14,9 @@
   .dot{width:8px;height:8px;border-radius:50%;background:#f85149;display:inline-block;flex-shrink:0}
   .dot.on{background:#3fb950}
   .st{color:#8b949e;font-size:.8rem}
-  select,button{background:#21262d;color:#e6edf3;border:1px solid #30363d;padding:5px 10px;border-radius:6px;cursor:pointer;font-size:.8rem}
+  .group{display:flex;gap:4px;align-items:center}
+  .group + .group::before{content:'';display:inline-block;width:1px;height:20px;background:#30363d;margin:0 4px}
+  select,button{background:#21262d;color:#e6edf3;border:1px solid #30363d;padding:5px 10px;border-radius:6px;cursor:pointer;font-size:.8rem;transition:background .15s}
   button:hover{background:#30363d}
   button:disabled{opacity:.4;cursor:not-allowed}
   .primary{background:#238636;border-color:#2ea043}
@@ -22,19 +24,34 @@
   .danger{background:#da3633;border-color:#f85149}
   .danger:hover{background:#f85149}
 
-  .grid{display:flex;flex-direction:column;gap:1px;margin:8px 0}
-  .row{display:flex;align-items:center;gap:3px;padding:2px 4px;border-radius:4px;transition:background .15s}
+  .grid{display:flex;flex-direction:column;gap:1px;margin:8px 0;border:1px solid #21262d;border-radius:8px;overflow:hidden}
+  .row{display:flex;align-items:center;gap:3px;padding:4px 8px;transition:background .15s}
+  .row:nth-child(even){background:#0d1117}
   .row:nth-child(odd){background:#161b22}
-  .row.changed{background:#2a2410;outline:1px solid #d29922}
+  .row.changed{background:#2a2410;outline:1px solid #d29922;outline-offset:-1px}
   .blk{color:#8b949e;font-size:.74rem;width:105px;flex-shrink:0}
-  .byt{width:30px;height:26px;text-align:center;font-family:monospace;font-size:.8rem;background:#0d1117;color:#e6edf3;border:1px solid #30363d;border-radius:4px;padding:0;text-transform:uppercase}
-  .byt:focus{border-color:#58a6ff;outline:none}
+  .byt{width:30px;height:28px;text-align:center;font-family:monospace;font-size:.8rem;background:#0d1117;color:#e6edf3;border:1px solid #30363d;border-radius:4px;padding:0;text-transform:uppercase;transition:border-color .15s}
+  .byt:focus{border-color:#58a6ff;outline:none;box-shadow:0 0 0 2px rgba(88,166,255,.2)}
   .st2{font-size:.65rem;color:#484f58;width:50px;text-align:center;flex-shrink:0}
 
-  #log{background:#0d1117;border:1px solid #30363d;border-radius:6px;padding:6px 10px;margin-top:8px;font-family:monospace;font-size:.8rem;min-height:40px;max-height:150px;overflow-y:auto;white-space:pre-wrap}
+  #log{background:#0d1117;border:1px solid #21262d;border-radius:6px;padding:6px 10px;margin-top:8px;font-family:monospace;font-size:.8rem;min-height:36px;max-height:120px;overflow-y:auto;white-space:pre-wrap}
   #log .t{color:#484f58}
   #log .ok{color:#3fb950}
   #log .er{color:#f85149}
+
+  .history{background:#0d1117;border:1px solid #21262d;border-radius:8px;margin-top:8px;overflow:hidden}
+  .history-header{padding:6px 10px;font-size:.8rem;color:#8b949e;display:flex;justify-content:space-between;align-items:center;border-bottom:1px solid #21262d;cursor:pointer;user-select:none}
+  .history-header:hover{background:#161b22}
+  .h-count{color:#484f58;font-size:.7rem}
+  .history-body{max-height:200px;overflow-y:auto;display:none}
+  .history-body.open{display:block}
+  .h-entry{display:flex;align-items:center;gap:8px;padding:4px 10px;font-size:.75rem;cursor:pointer;transition:background .15s}
+  .h-entry:nth-child(even){background:#0d1117}
+  .h-entry:nth-child(odd){background:#161b22}
+  .h-entry:hover{background:#1f2937}
+  .h-time{color:#484f58;white-space:nowrap;flex-shrink:0}
+  .h-blocks{color:#8b949e;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-family:monospace}
+  .h-restore{color:#58a6ff;font-size:.65rem;opacity:.7;flex-shrink:0}
 
   #loading{text-align:center;margin-top:48px;color:#8b949e}
 </style>
@@ -50,415 +67,289 @@
   <div class="bar">
     <span class="dot" id="dot"></span>
     <span class="st" id="status">Not connected</span>
-    <select id="baudSel">
-      <option value="9600" selected>9600</option>
-      <option value="19200">19200</option>
-      <option value="38400">38400</option>
-      <option value="57600">57600</option>
-      <option value="115200">115200</option>
-    </select>
-    <button id="btnConn" class="primary">Connect</button>
-    <button id="btnDisc" disabled>Disconnect</button>
-    <button id="btnRead" class="primary" disabled>Read All</button>
-    <button id="btnWrite" class="danger" disabled>Write</button>
-    <button id="btnDef" disabled>Default Cfg</button>
-     <button id="btnBeep" disabled>Beep</button>
-    <button id="btnSave" disabled>Save</button>
-    <button id="btnLoad" disabled>Load</button>
-    <button id="btnRestore" disabled>Restore</button>
+    <div class="group">
+      <select id="baudSel">
+        <option value="9600" selected>9600</option>
+        <option value="19200">19200</option>
+        <option value="38400">38400</option>
+        <option value="57600">57600</option>
+        <option value="115200">115200</option>
+      </select>
+      <button id="btnConn" class="primary">Connect</button>
+      <button id="btnDisc" disabled>Disc</button>
+    </div>
+    <div class="group">
+      <button id="btnRead" class="primary" disabled>Read</button>
+      <button id="btnWrite" class="danger" disabled>Write ✓</button>
+      <button id="btnDef" disabled>Default</button>
+      <button id="btnBeep" disabled>Beep</button>
+    </div>
   </div>
 
   <div class="grid" id="grid"></div>
-
   <div id="log">Ready. Click Connect.</div>
+
+  <div class="history" id="history-panel">
+    <div class="history-header" id="history-header">
+      <span>History <span class="h-count" id="h-count">(0)</span></span>
+      <span id="h-toggle" style="color:#484f58">▸ show</span>
+    </div>
+    <div class="history-body" id="history-body"></div>
+  </div>
 </div>
 
 <script>
 "use strict";
 
 const STX = 0xAA, ETX = 0xBB;
-
-function bcc(bytes) { let x = 0; for (const b of bytes) x ^= b; return x; }
+function bcc(b) { let x=0; for (const v of b) x^=v; return x; }
 
 function encodeFrame(station, cmd, data) {
-  const frame = new Uint8Array(6 + data.length);
-  frame[0] = STX; frame[1] = station; frame[2] = 1 + data.length;
-  frame[3] = cmd; frame.set(data, 4);
-  frame[4 + data.length] = bcc(frame.subarray(1, 4 + data.length));
-  frame[5 + data.length] = ETX;
-  return frame;
+  const f = new Uint8Array(6+data.length);
+  f[0]=STX;f[1]=station;f[2]=1+data.length;f[3]=cmd;f.set(data,4);
+  f[4+data.length]=bcc(f.subarray(1,4+data.length));
+  f[5+data.length]=ETX; return f;
 }
 
 function decodeFrame(buf) {
-  if (buf.length < 6) throw new Error('frame too short');
-  if (buf[0] !== STX) throw new Error('bad STX ' + buf[0].toString(16));
-  const len = buf[2], dataLen = len - 1;
-  const bccPos = 4 + dataLen, lastPos = bccPos + 1;
-  if (buf.length <= lastPos) throw new Error('frame truncated');
-  if (buf[lastPos] !== ETX) throw new Error('bad ETX ' + buf[lastPos].toString(16));
-  const calcBCC = bcc(buf.subarray(1, bccPos));
-  if (calcBCC !== buf[bccPos]) throw new Error('bad BCC');
-  return { status: buf[3], data: buf.slice(4, bccPos) };
+  if (buf.length<6||buf[0]!==STX) throw Error('bad frame');
+  const len=buf[2],dl=len-1,bp=4+dl,lp=bp+1;
+  if (buf.length<=lp||buf[lp]!==ETX) throw Error('truncated');
+  if (bcc(buf.subarray(1,bp))!==buf[bp]) throw Error('bad bcc');
+  return {status:buf[3],data:buf.slice(4,bp)};
 }
 
 async function readFrame(port, timeoutMs) {
-  const reader = port.readable.getReader();
-  const buf = [];
-  const deadline = performance.now() + timeoutMs;
+  const r = port.readable.getReader();
+  const buf=[]; const deadline=performance.now()+timeoutMs;
   try {
-    while (performance.now() < deadline) {
-      const remaining = Math.max(1, deadline - performance.now());
-      const result = await Promise.race([
-        reader.read(),
-        wait(remaining).then(() => ({timedOut: true}))
-      ]);
-      if (result.timedOut) {
-        console.log('readFrame timeout, got', buf.length, 'bytes so far');
-        break;
-      }
-      const { value, done } = result;
-      if (done) { console.log('readFrame stream done, got', buf.length, 'bytes'); break; }
-      if (value && value.length > 0) {
-        console.log('readFrame chunk:', Array.from(value).map(b=>b.toString(16).padStart(2,'0').toUpperCase()).join(' '));
-      }
-      for (const b of value) {
-        buf.push(b);
-        if (b === ETX) {
-          console.log('readFrame ETX found at', buf.length, 'bytes');
-          return new Uint8Array(buf);
-        }
-      }
+    while (performance.now()<deadline) {
+      const rem=Math.max(1,deadline-performance.now());
+      const result = await Promise.race([r.read(), wait(rem).then(()=>({timedOut:true}))]);
+      if (result.timedOut) break;
+      const {value,done}=result;
+      if (done) break;
+      for (const b of value) { buf.push(b); if (b===ETX) return new Uint8Array(buf); }
     }
-  } finally {
-    reader.releaseLock();
-  }
-  if (buf.length > 0) {
-    console.log('readFrame returning partial:', buf.length, 'bytes');
-    return new Uint8Array(buf);
-  }
-  throw new Error('timeout');
+  } finally { r.releaseLock(); }
+  if (buf.length>0) return new Uint8Array(buf);
+  throw Error('timeout');
 }
 
-function wait(ms) { return new Promise(r => setTimeout(r, ms)); }
+function wait(ms) { return new Promise(r=>setTimeout(r,ms)); }
 
-let port = null;
-let writer = null;
-let connected = false;
-let busy = false;
-const blocks = Array.from({length:8}, () => new Uint8Array(4));
-const lastRead = Array.from({length:8}, () => null);
-const changed = new Set();
-const selected = new Set();
+let port=null,writer=null,connected=false,busy=false;
+const blocks=Array.from({length:8},()=>new Uint8Array(4));
+const lastRead=Array.from({length:8},()=>null);
+const changed=new Set(), selected=new Set();
+let historyOpen=false;
 
 async function drain() {
   try {
-    const reader = port.readable.getReader();
-    const result = await Promise.race([
-      reader.read(),
-      wait(50).then(() => ({timedOut: true}))
-    ]);
-    reader.releaseLock();
-    if (!result.timedOut && result.value) {
-      console.log('drain: discarded', result.value.length, 'bytes');
-    }
+    const r=port.readable.getReader();
+    const result=await Promise.race([r.read(),wait(50).then(()=>({timedOut:true}))]);
+    r.releaseLock();
+    if (!result.timedOut&&result.value) console.log('drain:',result.value.length,'bytes');
   } catch(e) {}
 }
 
 async function transact(cmd, payload) {
-  const frame = encodeFrame(0, cmd, payload);
-  console.log('TX:', Array.from(frame).map(b=>b.toString(16).padStart(2,'0').toUpperCase()).join(' '), '('+frame.length+' bytes)');
-  await drain();
-  await writer.write(frame);
-  const resp = await readFrame(port, 5000);
-  console.log('RX:', Array.from(resp).map(b=>b.toString(16).padStart(2,'0').toUpperCase()).join(' '), '('+resp.length+' bytes)');
-  const dec = decodeFrame(resp);
-  if (dec.status !== 0) throw new Error(`device status ${dec.status.toString(16)}: ${dec.data.length ? dec.data[0].toString(16) : '?'}`);
+  const frame = encodeFrame(0,cmd,payload);
+  await drain(); await writer.write(frame); await wait(50);
+  const resp=await readFrame(port,5000);
+  const dec=decodeFrame(resp);
+  if (dec.status!==0) throw Error(`status ${dec.status.toString(16)}`);
   return dec.data;
 }
 
-// Read all blocks. Cascade read fills blocks 1-n from a single read.
-// Block 0 (config) is not read — device doesn't respond to it.
 async function readAll() {
   let raw;
   try {
-    raw = await transact(0x9A, [0xFE]);
-    // Some firmware returns all-identical blocks — skip to cascade.
-    if (raw.length > 4) {
-      let allSame = true;
-      for (let i = 4; i < raw.length; i += 4) {
-        if (raw[i] !== raw[0] || raw[i+1] !== raw[1] || raw[i+2] !== raw[2] || raw[i+3] !== raw[3]) {
-          allSame = false; break;
-        }
-      }
-      if (allSame) throw new Error('0x9A returned garbage, fallback to cascade');
+    raw = await transact(0x9A,[0xFE]);
+    if (raw.length>4) {
+      let same=true;
+      for (let i=4;i<raw.length;i+=4)
+        if (raw[i]!==raw[0]||raw[i+1]!==raw[1]||raw[i+2]!==raw[2]||raw[i+3]!==raw[3]){same=false;break}
+      if (same) throw Error('garbage');
     }
-  } catch(e) {
-    raw = await transact(0x90, [0]);
+  } catch(e) { raw = await transact(0x90,[0]); }
+  if (raw.length<4) throw Error('short read');
+  const n=Math.min(Math.floor(raw.length/4),7);
+  for (let i=0;i<n;i++) {const o=i*4; blocks[i+1]=new Uint8Array([raw[o],raw[o+1],raw[o+2],raw[o+3]]);}
+  if (n<6) {
+    for (let i=n+1;i<=6;i++) try {
+      const r=await transact(0x90,[0,i]);
+      if (r.length>=4) blocks[i]=new Uint8Array([r[0],r[1],r[2],r[3]]);
+    } catch(e) { break; }
   }
-  if (raw.length < 4) throw new Error(`short read: ${raw.length} bytes`);
-  const n = Math.min(Math.floor(raw.length / 4), 7);
-  for (let i = 0; i < n; i++) {
-    const off = i * 4;
-    blocks[i+1] = new Uint8Array([raw[off], raw[off+1], raw[off+2], raw[off+3]]);
-  }
-  // Read remaining user blocks individually (non-cascade cards).
-  if (n < 6) {
-    for (let i = n + 1; i <= 6; i++) {
-      try {
-        const r = await transact(0x90, [0, i]);
-        if (r.length >= 4) blocks[i] = new Uint8Array([r[0], r[1], r[2], r[3]]);
-      } catch(e) {
-        console.log('block '+i+' read failed, stopping:', e.message);
-        break;
-      }
-    }
-  }
-  // Try block 0 (config) and 7 — only use single-block responses.
-  // Cascade cards return cascade data for these, which we ignore.
-  for (const b of [0, 7]) {
-    if (blocks[b][0] !== 0 || blocks[b][1] !== 0 || blocks[b][2] !== 0 || blocks[b][3] !== 0) continue;
-    try {
-      const r = await transact(0x90, [0, b]);
-      if (r.length === 4) blocks[b] = new Uint8Array([r[0], r[1], r[2], r[3]]);
-    } catch(e) {}
+  for (const b of [0,7]) {
+    if (blocks[b].some(v=>v!==0)) continue;
+    try { const r=await transact(0x90,[0,b]); if (r.length===4) blocks[b]=new Uint8Array([r[0],r[1],r[2],r[3]]); } catch(e) {}
   }
 }
 
-async function writeBlock(n, data) {
-  await transact(0x91, [0, n, data[0], data[1], data[2], data[3]]);
-}
+async function writeBlock(n,data) { await transact(0x91,[0,n,data[0],data[1],data[2],data[3]]); }
+async function beep() { await transact(0x89,[5,1]); }
+async function getSerialNumber() { try{const r=await transact(0x83,[]);if(r.length>=8)return Array.from(r.slice(0,8)).map(b=>b.toString(16).padStart(2,'0')).join('').toUpperCase()}catch(e){return''} }
+async function getFirmwareVersion() { try{return new TextDecoder().decode(await transact(0x86,[])).replace(/\0/g,'').trim()}catch(e){return''} }
 
-async function beep() { await transact(0x89, [5, 1]); }
-
-async function getSerialNumber() {
-  try { const raw = await transact(0x83, []); return raw.length >= 8 ? Array.from(raw.slice(0,8)).map(b=>b.toString(16).padStart(2,'0')).join('').toUpperCase() : ''; } catch(e) { return ''; }
-}
-
-async function getFirmwareVersion() {
-  try { const raw = await transact(0x86, []); return new TextDecoder().decode(raw).replace(/\0/g, '').trim(); } catch(e) { return ''; }
-}
-
-function el(id) { return document.getElementById(id); }
+function el(id){return document.getElementById(id)}
 
 function grid() {
-  const g = el('grid'); g.innerHTML = '';
-  for (let b = 0; b < 8; b++) {
-    const r = document.createElement('div'); r.className = 'row'; r.id = 'r'+b;
-    const cb = document.createElement('input'); cb.type = 'checkbox'; cb.id = 'cb'+b;
-    cb.style.margin = '0 4px 0 0'; cb.style.accentColor = '#238636';
-    cb.onchange = () => { selected[cb.checked ? 'add' : 'delete'](b); render(); };
+  const g=el('grid');g.innerHTML='';
+  for (let b=0;b<8;b++) {
+    const r=document.createElement('div');r.className='row';r.id='r'+b;
+    const cb=document.createElement('input');cb.type='checkbox';cb.id='cb'+b;
+    cb.style.cssText='margin:0 4px 0 0;accentColor:#238636;cursor:pointer';
+    cb.onchange=()=>{selected[cb.checked?'add':'delete'](b);render()};
     r.appendChild(cb);
-    // Auto-check on read/write/load
-    const l = document.createElement('span'); l.className = 'blk';
-    l.textContent = b === 0 ? 'Config' : 'Block '+b;
-    r.appendChild(l);
-    for (let i = 0; i < 4; i++) {
-      const inp = document.createElement('input'); inp.className = 'byt';
-      inp.id = 'b'+b+'_'+i; inp.maxLength = 2; inp.placeholder = '00';
-      inp.oninput = () => onEdit(b);
-      inp.onkeydown = e => {
-        if (e.key === 'ArrowRight' && i < 3) { e.preventDefault(); el('b'+b+'_'+(i+1)).focus(); }
-        if (e.key === 'ArrowLeft' && i > 0) { e.preventDefault(); el('b'+b+'_'+(i-1)).focus(); }
-        if (e.key === 'ArrowUp' && b > 0) { e.preventDefault(); el('b'+(b-1)+'_'+i).focus(); }
-        if (e.key === 'ArrowDown' && b < 7) { e.preventDefault(); el('b'+(b+1)+'_'+i).focus(); }
+    const l=document.createElement('span');l.className='blk';
+    l.textContent=b===0?'Config':'Block '+b; r.appendChild(l);
+    for (let i=0;i<4;i++) {
+      const inp=document.createElement('input');inp.className='byt';inp.id='b'+b+'_'+i;
+      inp.maxLength=2;inp.placeholder='00';inp.oninput=()=>onEdit(b);
+      inp.onkeydown=e=>{
+        if (e.key==='ArrowRight'&&i<3){e.preventDefault();el('b'+(b)+'_'+(i+1)).focus()}
+        if (e.key==='ArrowLeft'&&i>0){e.preventDefault();el('b'+(b)+'_'+(i-1)).focus()}
+        if (e.key==='ArrowUp'&&b>0){e.preventDefault();el('b'+(b-1)+'_'+(i)).focus()}
+        if (e.key==='ArrowDown'&&b<7){e.preventDefault();el('b'+(b+1)+'_'+(i)).focus()}
       };
       r.appendChild(inp);
     }
-    const s = document.createElement('span'); s.className = 'st2'; s.id = 's'+b;
-    r.appendChild(s);
-    g.appendChild(r);
+    const s=document.createElement('span');s.className='st2';s.id='s'+b;
+    r.appendChild(s);g.appendChild(r);
   }
 }
 
-function setBlock(b, data) {
-  for (let i = 0; i < 4; i++) el('b'+b+'_'+i).value = data[i].toString(16).padStart(2,'0').toUpperCase();
-  blocks[b] = new Uint8Array(data);
-}
-
-function getBlock(b) {
-  const out = new Uint8Array(4);
-  for (let i = 0; i < 4; i++) out[i] = parseInt(el('b'+b+'_'+i).value || '0', 16) || 0;
-  return out;
-}
+function setBlock(b,data){for(let i=0;i<4;i++)el('b'+b+'_'+i).value=data[i].toString(16).padStart(2,'0').toUpperCase();blocks[b]=new Uint8Array(data)}
+function getBlock(b){const o=new Uint8Array(4);for(let i=0;i<4;i++)o[i]=parseInt(el('b'+b+'_'+i).value||'0',16)||0;return o}
+function bytesEqual(a,b){for(let i=0;i<4;i++)if(a[i]!==b[i])return false;return true}
 
 function onEdit(b) {
-  const cur = getBlock(b);
-  blocks[b] = cur;
-  const was = lastRead[b];
-  if (was && !bytesEqual(cur, was)) {
-    changed.add(b); el('r'+b).classList.add('changed'); el('s'+b).textContent = 'CHANGED';
-    selected.add(b); el('cb'+b).checked = true;
-  } else {
-    changed.delete(b); el('r'+b).classList.remove('changed'); el('s'+b).textContent = '';
-  }
+  const cur=getBlock(b);blocks[b]=cur;
+  const was=lastRead[b];
+  if (was&&!bytesEqual(cur,was)){changed.add(b);el('r'+b).classList.add('changed');el('s'+b).textContent='EDITED';selected.add(b);el('cb'+b).checked=true}
+  else{changed.delete(b);el('r'+b).classList.remove('changed');el('s'+b).textContent=''}
   render();
 }
-
-function bytesEqual(a, b) { for (let i = 0; i < 4; i++) if (a[i] !== b[i]) return false; return true; }
 
 function render() {
-  el('dot').className = 'dot' + (connected ? ' on' : '');
-  el('status').textContent = connected ? 'Connected' : 'Not connected';
-  el('btnConn').disabled = connected;
-  el('btnDisc').disabled = !connected;
-  el('btnRead').disabled = !connected || busy;
-  el('btnWrite').disabled = !connected || changed.size === 0 || busy;
-  el('btnDef').disabled = !connected || busy;
-  el('btnBeep').disabled = !connected || busy;
-  el('btnSave').disabled = !connected || busy;
-  el('btnLoad').disabled = !connected || busy;
-  el('btnRestore').disabled = !connected || busy;
+  el('dot').className='dot'+(connected?' on':'');
+  el('status').textContent=connected?'Connected':'Not connected';
+  el('btnConn').disabled=connected;el('btnDisc').disabled=!connected;
+  el('btnRead').disabled=!connected||busy;
+  el('btnWrite').disabled=!connected||busy||selected.size===0;
+  el('btnDef').disabled=!connected||busy;el('btnBeep').disabled=!connected||busy;
 }
 
-function log(msg, cls) {
-  const d = new Date();
-  el('log').innerHTML += `<span class="t">[${d.toLocaleTimeString()}]</span> <span class="${cls}">${msg}</span>\n`;
-  el('log').scrollTop = el('log').scrollHeight;
+function log(msg,cls) {
+  el('log').innerHTML+=`<span class="t">[${new Date().toLocaleTimeString()}]</span> <span class="${cls}">${msg}</span>\n`;
+  el('log').scrollTop=el('log').scrollHeight;
 }
 
-el('btnConn').onclick = async () => {
-  if (!navigator.serial) { log('Web Serial not available', 'er'); return; }
-  try {
-    port = await navigator.serial.requestPort();
-    const baud = parseInt(el('baudSel').value);
-    log(`Opening port at ${baud} baud…`, 't');
-    await port.open({ baudRate: baud, dataBits: 8, stopBits: 1, parity: 'none' });
-    try {
-      await port.setSignals({ dataTerminalReady: false, requestToSend: false });
-    } catch(e) {
-      console.warn('setSignals failed:', e.message);
-    }
-    writer = port.writable.getWriter();
-    connected = true; render();
-    log('Connected — reading device info…', 'ok');
-    const sn = await getSerialNumber();
-    const fw = await getFirmwareVersion();
-    if (sn || fw) log(`SN: ${sn || '?'}  FW: ${fw || '?'}`, 'ok');
-    log('Connected — press Read All', 'ok');
-  } catch(e) { log('Connect: '+e, 'er'); console.error(e); }
+function renderHistory() {
+  const hist=JSON.parse(localStorage.getItem('t57_history')||'[]');
+  el('h-count').textContent=`(${hist.length})`;
+  const body=el('history-body');
+  body.innerHTML=hist.map((e,i)=>{
+    const t=new Date(e.time);
+    const parts=e.blocks.map((b,bi)=>b.some(v=>v!==0)?b.map(v=>v.toString(16).padStart(2,'0').toUpperCase()).join(''):null);
+    const summary=parts.map((p,i)=>p?`${i}:${p}`:null).filter(Boolean).join(' · ');
+    return `<div class="h-entry" data-idx="${i}"><span class="h-time">${t.toLocaleString()}</span><span class="h-blocks">${summary||'(empty)'}</span><span class="h-restore">↩ restore</span></div>`;
+  }).join('');
+  // Click handler via delegation
+  Array.from(body.children).forEach(entry=>{
+    entry.onclick=()=>{
+      const idx=parseInt(entry.dataset.idx);
+      const hist=JSON.parse(localStorage.getItem('t57_history')||'[]');
+      const e=hist[idx]; if(!e) return;
+      for(let b=0;b<8;b++){setBlock(b,new Uint8Array(e.blocks[b]));lastRead[b]=null;changed.delete(b);el('r'+b).classList.remove('changed');el('s'+b).textContent='✓'}
+      selected.clear();render();
+      log('Restored from '+new Date(e.time).toLocaleString(),'ok');
+    };
+  });
+}
+
+// Toggle history panel
+el('history-header').onclick=()=>{historyOpen=!historyOpen;el('history-body').className='history-body'+(historyOpen?' open':'');el('h-toggle').textContent=historyOpen?'▾ hide':'▸ show';if(historyOpen)renderHistory()};
+
+el('btnConn').onclick=async()=>{
+  if(!navigator.serial){log('Web Serial N/A','er');return}
+  try{
+    port=await navigator.serial.requestPort();
+    await port.open({baudRate:parseInt(el('baudSel').value),dataBits:8,stopBits:1,parity:'none'});
+    try{await port.setSignals({dataTerminalReady:false,requestToSend:false})}catch(e){}
+    writer=port.writable.getWriter();connected=true;render();
+    log('Connected','ok');
+    const sn=await getSerialNumber(),fw=await getFirmwareVersion();
+    if(sn||fw)log(`SN:${sn||'?'} FW:${fw||'?'}`,'ok');
+    log('Ready — press Read','ok');
+  }catch(e){log('Connect: '+e,'er');console.error(e)}
 };
 
-el('btnDisc').onclick = async () => {
-  connected = false; render();
-  try { if (writer) { writer.releaseLock(); writer = null; } if (port) { await port.close(); port = null; } } catch(e) {}
-  for (let b = 0; b < 8; b++) { lastRead[b] = null; setBlock(b, [0,0,0,0]); }
-  changed.clear(); selected.clear(); render();
-  log('Disconnected', 'er');
+el('btnDisc').onclick=async()=>{
+  connected=false;render();
+  try{if(writer){writer.releaseLock();writer=null}if(port){await port.close();port=null}}catch(e){}
+  for(let b=0;b<8;b++){lastRead[b]=null;setBlock(b,[0,0,0,0])}
+  changed.clear();selected.clear();render();
+  log('Disconnected','er');
 };
 
-el('btnRead').onclick = async () => {
-  if (busy) return;
-  busy = true; render();
-  try {
-    // Save pre-read state for change detection
-    const prev = blocks.map(b => new Uint8Array(b));
-    log('Reading…', 't');
+el('btnRead').onclick=async()=>{
+  if(busy)return;busy=true;render();
+  try{
+    const prev=blocks.map(b=>new Uint8Array(b));
+    log('Reading…','t');
     await readAll();
-    let cnt = 0;
-    for (let b = 0; b < 8; b++) {
-      const z = blocks[b][0] === 0 && blocks[b][1] === 0 && blocks[b][2] === 0 && blocks[b][3] === 0;
-      if (!z) cnt++;
-      setBlock(b, blocks[b]);
-      lastRead[b] = new Uint8Array(blocks[b]);
-      // Show changed indicator when data differs from previous read
-      if (!bytesEqual(blocks[b], prev[b])) {
-        el('r'+b).classList.add('changed');
-        el('s'+b).textContent = 'CHANGED';
-        changed.add(b);
-      } else {
-        changed.delete(b); el('r'+b).classList.remove('changed');
-        el('s'+b).textContent = z ? '—' : '✓';
-      }
-      // Auto-check blocks with data
-      el('cb'+b).checked = !z;
-      if (!z) selected.add(b); else selected.delete(b);
+    let cnt=0;
+    for(let b=0;b<8;b++){
+      const z=blocks[b].every(v=>v===0);
+      if(!z)cnt++;
+      setBlock(b,blocks[b]);lastRead[b]=new Uint8Array(blocks[b]);
+      if(!bytesEqual(blocks[b],prev[b])){el('r'+b).classList.add('changed');el('s'+b).textContent='CHANGED';changed.add(b)}
+      else{changed.delete(b);el('r'+b).classList.remove('changed');el('s'+b).textContent=z?'—':'✓'}
+      el('cb'+b).checked=!z;if(!z)selected.add(b);else selected.delete(b);
     }
-    render();
-    log(`Read ${cnt} blocks`, 'ok');
-  } catch(e) { log('Read: '+e, 'er'); console.error(e); }
-  busy = false; render();
+    render();log(`Read ${cnt} blocks`,'ok');
+  }catch(e){log('Read: '+e,'er');console.error(e)}
+  busy=false;render();
 };
 
-el('btnWrite').onclick = async () => {
-  const toWrite = [...selected];
-  if (toWrite.length === 0) { log('No blocks selected', 't'); return; }
-  if (!confirm(`Write ${toWrite.length} block(s): ${toWrite.join(',')}?`)) { log('Cancelled', 't'); return; }
-  if (busy) return;
-  busy = true; render();
-  try {
-    // Save backup before writing
-    const backup = blocks.map(b => Array.from(b));
-    localStorage.setItem('t57_autobackup', JSON.stringify(backup));
-    for (const b of toWrite) {
-      const data = getBlock(b);
-      await writeBlock(b, data);
-      lastRead[b] = new Uint8Array(data);
-      changed.delete(b); el('r'+b).classList.remove('changed'); el('s'+b).textContent = '✓';
-    }
-    render();
-    log(`Wrote ${toWrite.length} block(s), backup saved`, 'ok');
-  } catch(e) { log('Write: '+e, 'er'); console.error(e); }
-  busy = false; render();
+el('btnWrite').onclick=async()=>{
+  const toWrite=[...selected];
+  if(toWrite.length===0){log('No blocks selected','t');return}
+  if(!confirm(`Write ${toWrite.length} block(s): ${toWrite.join(',')}?`)){log('Cancelled','t');return}
+  if(busy)return;busy=true;render();
+  try{
+    const userVals=blocks.map(b=>new Uint8Array(b));
+    try{log('Reading device state for history…','t');await readAll()}catch(e){log('Pre-read failed','er')}
+    const hist=JSON.parse(localStorage.getItem('t57_history')||'[]');
+    hist.unshift({time:new Date().toISOString(),blocks:blocks.map(b=>Array.from(b))});
+    if(hist.length>20)hist.length=20;
+    localStorage.setItem('t57_history',JSON.stringify(hist));
+    if(historyOpen)renderHistory();
+    for(const b of toWrite)blocks[b]=userVals[b];
+    for(const b of toWrite)setBlock(b,blocks[b]);
+    for(const b of toWrite){await writeBlock(b,blocks[b]);lastRead[b]=new Uint8Array(blocks[b]);changed.delete(b);el('r'+b).classList.remove('changed');el('s'+b).textContent='✓'}
+    selected.clear();render();
+    log(`Wrote ${toWrite.length} block(s)`,'ok');
+  }catch(e){log('Write: '+e,'er');console.error(e)}
+  busy=false;render();
 };
 
-el('btnDef').onclick = () => {
-  const data = new Uint8Array([0x00, 0x08, 0x80, 0xE8]);
-  setBlock(0, data); changed.add(0); el('r0').classList.add('changed'); el('s0').textContent = 'CHANGED';
-  selected.add(0); el('cb0').checked = true;
-  render();
-  log('Config set to 000880E8 — Write to apply', 'ok');
+el('btnDef').onclick=()=>{
+  const d=new Uint8Array([0x00,0x08,0x80,0xE8]);
+  setBlock(0,d);changed.add(0);el('r0').classList.add('changed');el('s0').textContent='EDITED';selected.add(0);el('cb0').checked=true;
+  render();log('Config 000880E8','ok');
 };
 
-el('btnBeep').onclick = async () => {
-  if (busy) return;
-  busy = true; render();
-  try { await beep(); log('Beep!', 'ok'); } catch(e) { log('Beep: '+e, 'er'); }
-  busy = false; render();
+el('btnBeep').onclick=async()=>{
+  if(busy)return;busy=true;render();
+  try{await beep();log('Beep!','ok')}catch(e){log('Beep: '+e,'er')}
+  busy=false;render();
 };
 
-el('btnSave').onclick = () => {
-  const data = blocks.map(b => Array.from(b));
-  localStorage.setItem('t57_snapshot', JSON.stringify(data));
-  log('Snapshot saved', 'ok');
-};
-
-el('btnLoad').onclick = () => {
-  const raw = localStorage.getItem('t57_snapshot');
-  if (!raw) { log('No snapshot found', 'er'); return; }
-  try {
-    const data = JSON.parse(raw);
-    for (let b = 0; b < 8; b++) {
-      setBlock(b, new Uint8Array(data[b]));
-      lastRead[b] = null;
-      changed.delete(b); el('r'+b).classList.remove('changed'); el('s'+b).textContent = '';
-    }
-    selected.clear();
-    render();
-    log('Snapshot loaded', 'ok');
-  } catch(e) { log('Load: '+e, 'er'); }
-};
-
-el('btnRestore').onclick = () => {
-  const raw = localStorage.getItem('t57_autobackup');
-  if (!raw) { log('No backup found', 'er'); return; }
-  if (!confirm('Restore blocks from last write backup?')) { log('Cancelled', 't'); return; }
-  try {
-    const data = JSON.parse(raw);
-    for (let b = 0; b < 8; b++) {
-      setBlock(b, new Uint8Array(data[b]));
-      lastRead[b] = null;
-      changed.delete(b); el('r'+b).classList.remove('changed');
-      el('s'+b).textContent = '✓';
-    }
-    selected.clear();
-    render();
-    log('Backup restored', 'ok');
-  } catch(e) { log('Restore: '+e, 'er'); }
-};
-
-grid();
-el('loading').style.display = 'none';
-el('app').style.display = 'block';
+grid();el('loading').style.display='none';el('app').style.display='block';
 </script>
 </body>
 </html>
