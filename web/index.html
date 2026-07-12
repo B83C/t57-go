@@ -332,6 +332,8 @@ el('btnRead').onclick = async () => {
   if (busy) return;
   busy = true; render();
   try {
+    // Save pre-read state for change detection
+    const prev = blocks.map(b => new Uint8Array(b));
     log('Reading…', 't');
     await readAll();
     let cnt = 0;
@@ -340,8 +342,15 @@ el('btnRead').onclick = async () => {
       if (!z) cnt++;
       setBlock(b, blocks[b]);
       lastRead[b] = new Uint8Array(blocks[b]);
-      changed.delete(b); el('r'+b).classList.remove('changed');
-      el('s'+b).textContent = z ? '—' : '✓';
+      // Show changed indicator when data differs from previous read
+      if (!bytesEqual(blocks[b], prev[b])) {
+        el('r'+b).classList.add('changed');
+        el('s'+b).textContent = 'CHANGED';
+        changed.add(b);
+      } else {
+        changed.delete(b); el('r'+b).classList.remove('changed');
+        el('s'+b).textContent = z ? '—' : '✓';
+      }
     }
     render();
     log(`Read ${cnt} blocks`, 'ok');

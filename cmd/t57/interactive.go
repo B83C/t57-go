@@ -233,10 +233,15 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.err != nil {
 			m.status = "Read error: " + msg.err.Error()
 		} else {
-			m.blocks = msg.blocks
-			for i := range m.changed {
-				m.changed[i] = false
+			// Detect blocks that changed from previous read
+			for i := 0; i < 8; i++ {
+				if msg.blocks[i] != m.blocks[i] {
+					m.changed[i] = true
+				} else {
+					m.changed[i] = false
+				}
 			}
+			m.blocks = msg.blocks
 			m.pending = false
 			cnt := 0
 			for _, b := range m.blocks {
