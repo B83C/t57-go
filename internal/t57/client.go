@@ -265,7 +265,6 @@ func (c *Client) ReadAllRaw() ([8][4]byte, error) {
 			}
 			return out, nil
 		}
-		debugf("ReadAllRaw: 0x9A returned all-identical data, falling through")
 	}
 
 	// Method 2: page-only read (1 data byte) — triggers cascade dump.

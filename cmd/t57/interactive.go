@@ -65,9 +65,6 @@ var globalArgs *args
 
 func runTUI(c *args) error {
 	globalArgs = c
-	t57.DebugLog = func(msg string, args ...interface{}) {
-		fmt.Fprintf(os.Stderr, "T57: "+msg+"\n", args...)
-	}
 	p := tea.NewProgram(initialModel(c))
 	if _, err := p.Run(); err != nil {
 		return err
