@@ -217,12 +217,6 @@ async function createWebUSBTransport() {
 
   await dev.open();
   if (dev.configuration === null) await dev.selectConfiguration(1);
-  console.log('USB device:', dev.vendorId.toString(16), dev.productId.toString(16), dev.productName);
-  for (const iface of dev.configuration.interfaces) {
-    for (const alt of iface.alternates) {
-      console.log(` iface#${iface.interfaceNumber} alt=${alt.alternateSetting} class=0x${alt.interfaceClass.toString(16)} ep:`, alt.endpoints.map(e=>`${e.direction[0]}${e.endpointNumber}(${e.type})`).join(','));
-    }
-  }
 
   // Find vendor-specific interface (class 0xFF) with bulk endpoints
   for (const iface of dev.configuration.interfaces) {
@@ -279,19 +273,16 @@ async function createWebUSBTransport() {
     write: async b => { await dev.transferOut(epOut,b); },
     read: async t => {
       const buf=[], dl=performance.now()+t;
-      let xferCount=0;
       while (performance.now()<dl) {
         const res = await Promise.race([
           dev.transferIn(epIn,64).then(r=>({data:r.data})),
           wait(Math.max(1,dl-performance.now())).then(()=>({timedOut:true}))
         ]);
-        if (res.timedOut) { console.log(`read: timeout after ${buf.length}B in ${xferCount} xfers`); break; }
-        xferCount++;
+        if (res.timedOut) break;
         const arr = new Uint8Array(res.data.buffer);
-        console.log(`read: xfer#${xferCount} got ${arr.length}B:`, Array.from(arr).map(b=>b.toString(16).padStart(2,'0')).join(' '));
-        for (const b of arr) { buf.push(b); if (b===ETX) { console.log(`read: done in ${xferCount} xfers, ${buf.length}B`); return new Uint8Array(buf); } }
+        for (const b of arr) { buf.push(b); if (b===ETX) return new Uint8Array(buf); }
       }
-      if (buf.length) { console.log(`read: partial ${buf.length}B`); return new Uint8Array(buf); }
+      if (buf.length) return new Uint8Array(buf);
       throw Error('timeout');
     },
     drain: async () => {},
@@ -307,21 +298,8 @@ let historyOpen=false;
 
 async function transact(cmd, payload) {
   const frame = encodeFrame(0,cmd,payload);
-  const hex = Array.from(frame).map(b=>b.toString(16).padStart(2,'0')).join(' ');
-  console.log(`TX: ${hex} (${frame.length}B) via ${transport.type||'?'}`);
-  await transport.drain();
-  await transport.write(frame);
-  await wait(100);
-  console.log('write done, reading...');
-  let resp;
-  try {
-    resp = await transport.read(5000);
-  } catch(e) {
-    console.log('read error:', e.message);
-    throw e;
-  }
-  const rxHex = Array.from(resp).map(b=>b.toString(16).padStart(2,'0')).join(' ');
-  console.log(`RX: ${rxHex} (${resp.length}B)`);
+  await transport.drain(); await transport.write(frame); await wait(100);
+  const resp=await transport.read(5000);
   const dec=decodeFrame(resp);
   if (dec.status!==0) throw Error(`status ${dec.status.toString(16)}`);
   return dec.data;
@@ -441,9 +419,7 @@ el('history-header').onclick=()=>{historyOpen=!historyOpen;el('history-body').cl
 el('btnConn').onclick=async()=>{
   if(busy)return;busy=true;render();
   try{
-    const t0=performance.now();
     transport=await createTransport();connected=true;render();
-    console.log('Transport:',transport.type,transport.chip||'',`(${(performance.now()-t0).toFixed(0)}ms)`);
     log(`Connected (${transport.type}${transport.chip?' '+transport.chip:''})`,'ok');
     const sn=await getSerialNumber(),fw=await getFirmwareVersion();
     if(sn||fw)log(`SN:${sn||'?'} FW:${fw||'?'}`,'ok');
