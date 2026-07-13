@@ -4,10 +4,6 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>T57 RFID — Hex Editor</title>
-<script type="module">
-import { serial } from 'https://cdn.jsdelivr.net/npm/@google/web-serial-polyfill@latest/dist/index.js';
-if (!navigator.serial) navigator.serial = serial;
-</script>
 <style>
   *,*::before,*::after{box-sizing:border-box}
   body{background:#0d1117;color:#e6edf3;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;margin:0;padding:16px;max-width:720px;margin:0 auto}
@@ -142,25 +138,118 @@ async function readFrame(port, timeoutMs) {
 
 function wait(ms) { return new Promise(r=>setTimeout(r,ms)); }
 
-let port=null,writer=null,connected=false,busy=false;
+// Known USB-serial chips for WebUSB fallback (Android)
+const USB_IDS = [
+  {vendorId:0x1a86,productId:0x7523,name:'CH340'},
+  {vendorId:0x1a86,productId:0x5523,name:'CH341'},
+  {vendorId:0x10c4,productId:0xea60,name:'CP210x'},
+  {vendorId:0x10c4,productId:0xea70,name:'CP2105'},
+  {vendorId:0x10c4,productId:0xea71,name:'CP2108'},
+  {vendorId:0x0403,productId:0x6001,name:'FT232'},
+  {vendorId:0x0403,productId:0x6010,name:'FT2232'},
+  {vendorId:0x0403,productId:0x6014,name:'FT232H'},
+  {vendorId:0x067b,productId:0x2303,name:'PL2303'},
+];
+
+async function createTransport() {
+  if (navigator.serial) {
+    const p = await navigator.serial.requestPort();
+    await p.open({baudRate:9600,dataBits:8,stopBits:1,parity:'none'});
+    try { await p.setSignals({dataTerminalReady:false,requestToSend:false}); } catch(e) {}
+    const w = p.writable.getWriter();
+    return {
+      type:'serial',
+      write: async bytes => { await w.write(bytes); },
+      read: async timeoutMs => {
+        const r = p.readable.getReader();
+        const buf=[]; const deadline=performance.now()+timeoutMs;
+        try {
+          while (performance.now()<deadline) {
+            const result = await Promise.race([r.read(),wait(Math.max(1,deadline-performance.now())).then(()=>({timedOut:true}))]);
+            if (result.timedOut) break;
+            const {value,done}=result;
+            if (done) break;
+            for (const b of value) { buf.push(b); if (b===ETX) return new Uint8Array(buf); }
+          }
+        } finally { r.releaseLock(); }
+        if (buf.length>0) return new Uint8Array(buf);
+        throw Error('timeout');
+      },
+      drain: async () => {
+        const r = p.readable.getReader();
+        await Promise.race([r.read(),wait(50).then(()=>({timedOut:true}))]);
+        r.releaseLock();
+      },
+      close: async () => { w.releaseLock(); await p.close(); }
+    };
+  }
+  if (navigator.usb) {
+    const d = await navigator.usb.requestDevice({filters:USB_IDS.map(({vendorId,productId})=>({vendorId,productId}))});
+    await d.open(); await d.selectConfiguration(1);
+    const iface = d.configuration.interfaces[0];
+    await d.claimInterface(iface.interfaceNumber);
+    let epOut=null, epIn=null;
+    iface.alternates[0].endpoints.forEach(ep => {
+      if (ep.direction==='out' && ep.type==='bulk') epOut=ep.endpointNumber;
+      if (ep.direction==='in' && ep.type==='bulk') epIn=ep.endpointNumber;
+    });
+    if (!epOut || !epIn) throw Error('no bulk endpoints');
+
+    // CH340 init sequence (harmless for other chips)
+    const ct = async (dir,type,recip,req,val=0,idx=iface.interfaceNumber,len=0) => {
+      const data = len ? new DataView(new ArrayBuffer(len)) : new DataView(new ArrayBuffer(0));
+      await d['controlTransfer'+(dir==='in'?'In':'Out')]({requestType:type,recipient:recip,request:req,value:val,index:idx},data);
+    };
+    try {
+      await ct('out','vendor','device',0xA1,0xC29C,0xB2B9);
+      await ct('out','vendor','device',0xA4,0xDF,iface.interfaceNumber);
+      await ct('out','vendor','device',0xA4,0x9F,iface.interfaceNumber);
+      await ct('in','vendor','device',0x95,0x0706,iface.interfaceNumber,2);
+      await ct('out','vendor','device',0x9A,0x2727,iface.interfaceNumber);
+      await ct('out','vendor','device',0x9A,0x1312,0xB282);
+      await ct('out','vendor','device',0x9A,0x0F2C,0x0008);
+      await ct('out','vendor','device',0x9A,0x2518,0x00C3);
+      await ct('in','vendor','device',0x95,0x0706,iface.interfaceNumber,2);
+      await ct('out','vendor','device',0x9A,0x2727,iface.interfaceNumber);
+    } catch(e) { console.log('chip init (optional):',e.message); }
+
+    return {
+      type:'webusb',
+      device:d, epOut, epIn,
+      write: async bytes => { await d.transferOut(epOut,bytes); },
+      read: async timeoutMs => {
+        const deadline=performance.now()+timeoutMs; const buf=[];
+        while (performance.now()<deadline) {
+          const result = await Promise.race([
+            d.transferIn(epIn,64).then(r=>({data:r.data})),
+            wait(Math.max(1,deadline-performance.now())).then(()=>({timedOut:true}))
+          ]);
+          if (result.timedOut) break;
+          const arr = new Uint8Array(result.data.buffer);
+          for (const b of arr) { buf.push(b); if (b===ETX) return new Uint8Array(buf); }
+        }
+        if (buf.length>0) return new Uint8Array(buf);
+        throw Error('timeout');
+      },
+      drain: async () => {
+        try { await Promise.race([d.transferIn(epIn,64),wait(50).then(()=>({timedOut:true}))]); } catch(e) {}
+      },
+      close: async () => { try{ d.close(); }catch(e){} }
+    };
+  }
+  throw Error('No serial or USB API available');
+}
+
+let transport=null,connected=false,busy=false;
 const blocks=Array.from({length:8},()=>new Uint8Array(4));
 const lastRead=Array.from({length:8},()=>null);
 const changed=new Set(), selected=new Set();
 let historyOpen=false;
 
-async function drain() {
-  try {
-    const r=port.readable.getReader();
-    const result=await Promise.race([r.read(),wait(50).then(()=>({timedOut:true}))]);
-    r.releaseLock();
-    if (!result.timedOut&&result.value) console.log('drain:',result.value.length,'bytes');
-  } catch(e) {}
-}
-
 async function transact(cmd, payload) {
   const frame = encodeFrame(0,cmd,payload);
-  await drain(); await writer.write(frame); await wait(50);
-  const resp=await readFrame(port,5000);
+  await transport.drain(); await transport.write(frame); await wait(50);
+  const resp=await transport.read(5000);
   const dec=decodeFrame(resp);
   if (dec.status!==0) throw Error(`status ${dec.status.toString(16)}`);
   return dec.data;
@@ -278,22 +367,20 @@ function renderHistory() {
 el('history-header').onclick=()=>{historyOpen=!historyOpen;el('history-body').className='history-body'+(historyOpen?' open':'');el('h-toggle').textContent=historyOpen?'▾ hide':'▸ show';if(historyOpen)renderHistory()};
 
 el('btnConn').onclick=async()=>{
-  if(!navigator.serial){log('Web Serial N/A','er');return}
+  if(busy)return;busy=true;render();
   try{
-    port=await navigator.serial.requestPort();
-    await port.open({baudRate:parseInt(el('baudSel').value),dataBits:8,stopBits:1,parity:'none'});
-    try{await port.setSignals({dataTerminalReady:false,requestToSend:false})}catch(e){}
-    writer=port.writable.getWriter();connected=true;render();
-    log('Connected','ok');
+    transport=await createTransport();connected=true;render();
+    log(`Connected (${transport.type})`,'ok');
     const sn=await getSerialNumber(),fw=await getFirmwareVersion();
     if(sn||fw)log(`SN:${sn||'?'} FW:${fw||'?'}`,'ok');
     log('Ready — press Read','ok');
   }catch(e){log('Connect: '+e,'er');console.error(e)}
+  busy=false;render();
 };
 
 el('btnDisc').onclick=async()=>{
   connected=false;render();
-  try{if(writer){writer.releaseLock();writer=null}if(port){await port.close();port=null}}catch(e){}
+  try{if(transport){await transport.close();transport=null}}catch(e){}
   for(let b=0;b<8;b++){lastRead[b]=null;setBlock(b,[0,0,0,0])}
   changed.clear();selected.clear();render();
   log('Disconnected','er');
