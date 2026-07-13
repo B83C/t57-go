@@ -261,8 +261,12 @@ async function createWebUSBTransport() {
   // CH340 init
   const chipName = (USB_TABLE[dev.vendorId]||{})[Object.keys(USB_TABLE[dev.vendorId]||{})[0]||'']?.[dev.productId]||'unknown';
   const ct = async (dir,req,val,idx,len=0) => {
-    const d = len ? new DataView(new ArrayBuffer(len)) : new DataView(new ArrayBuffer(0));
-    await dev['controlTransfer'+(dir==='in'?'In':'Out')]({requestType:'vendor',recipient:'device',request:req,value:val,index:idx},d);
+    if (dir === 'in') {
+      return await dev.controlTransferIn({requestType:'vendor',recipient:'device',request:req,value:val,index:idx}, len);
+    } else {
+      const d = len ? new DataView(new ArrayBuffer(len)) : new DataView(new ArrayBuffer(0));
+      await dev.controlTransferOut({requestType:'vendor',recipient:'device',request:req,value:val,index:idx}, d);
+    }
   };
   if (chipName === 'CH340' || chipName === 'CH341') {
     try {
