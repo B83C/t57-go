@@ -138,70 +138,128 @@ async function readFrame(port, timeoutMs) {
 
 function wait(ms) { return new Promise(r=>setTimeout(r,ms)); }
 
+// USB-serial chip database (from selevo/WebUsbSerialTerminal)
+const USB_TABLE = {
+  0x0403: {FTDI: {0x6001:'FT232R',0x6010:'FT2232',0x6011:'FT4232',0x6014:'FT232H',0x6015:'FT231X'}},
+  0x1a86: {Quinheng:{0x7523:'CH340',0x5523:'CH341'}},
+  0x10c4: {'Silicon Labs':{0xea60:'CP210x',0xea70:'CP2105',0xea71:'CP2108'}},
+  0x067b: {Prolific:{0x2303:'PL2303'}},
+};
+
 async function createTransport() {
-  if (navigator.serial) {
-    const p = await navigator.serial.requestPort();
-    await p.open({baudRate:9600,dataBits:8,stopBits:1,parity:'none'});
-    try { await p.setSignals({dataTerminalReady:false,requestToSend:false}); } catch(e) {}
-    const w = p.writable.getWriter();
-    return {
-      type:'serial',
-      write: async bytes => { await w.write(bytes); },
-      read: async timeoutMs => {
-        const r = p.readable.getReader();
-        const buf=[]; const deadline=performance.now()+timeoutMs;
-        try {
-          while (performance.now()<deadline) {
-            const result = await Promise.race([r.read(),wait(Math.max(1,deadline-performance.now())).then(()=>({timedOut:true}))]);
-            if (result.timedOut) break;
-            const {value,done}=result;
-            if (done) break;
-            for (const b of value) { buf.push(b); if (b===ETX) return new Uint8Array(buf); }
-          }
-        } finally { r.releaseLock(); }
-        if (buf.length>0) return new Uint8Array(buf);
-        throw Error('timeout');
-      },
-      drain: async () => {
-        const r = p.readable.getReader();
-        await Promise.race([r.read(),wait(50).then(()=>({timedOut:true}))]);
-        r.releaseLock();
-      },
-      close: async () => { w.releaseLock(); await p.close(); }
-    };
+  // On Android, WebUSB works but WebSerial doesn't — try USB first if available
+  const isAndroid = /android/i.test(navigator.userAgent || '');
+
+  if (isAndroid && navigator.usb) {
+    try { return await createWebUSBTransport(); } catch(e) { console.log('WebUSB try:',e.message); }
   }
-  if (navigator.usb) {
-    // Show ALL USB devices — user picks the right one
-    let device;
+
+  // Try Web Serial (desktop Chrome, Edge, etc.)
+  if (navigator.serial) {
     try {
-      device = await navigator.usb.requestDevice({filters:[{}]});
-    } catch(e) {
-      // Some browsers reject empty filter — try without it
-      try { device = await navigator.usb.requestDevice(); } catch(e2) {
-        throw Error('No USB device selected');
-      }
+      const p = await navigator.serial.requestPort();
+      await p.open({baudRate:9600,dataBits:8,stopBits:1,parity:'none'});
+      try { await p.setSignals({dataTerminalReady:false,requestToSend:false}); } catch(e) {}
+      const w = p.writable.getWriter();
+      return {
+        type:'serial',
+        write: async b => { await w.write(b); },
+        read: async t => {
+          const r=p.readable.getReader(),buf=[],dl=performance.now()+t;
+          try {
+            while (performance.now()<dl) {
+              const res=await Promise.race([r.read(),wait(Math.max(1,dl-performance.now())).then(()=>({timedOut:true}))]);
+              if (res.timedOut) break;
+              for (const b of res.value||[]) { buf.push(b); if (b===ETX) return new Uint8Array(buf); }
+              if (res.done) break;
+            }
+          } finally { r.releaseLock(); }
+          if (buf.length) return new Uint8Array(buf);
+          throw Error('timeout');
+        },
+        drain: async () => {
+          const r=p.readable.getReader();
+          await Promise.race([r.read(),wait(50).then(()=>({timedOut:true}))]);
+          r.releaseLock();
+        },
+        close: async () => { w.releaseLock(); await p.close(); }
+      };
+    } catch(e) { console.log('Web Serial:',e.message); }
+  }
+
+  // Fallback to WebUSB (Android / desktop with USB-serial adapter)
+  if (navigator.usb) return await createWebUSBTransport();
+
+  throw Error('No serial/USB API. Try Chrome/Edge on HTTPS.');
+}
+
+async function createWebUSBTransport() {
+  // Build filter from chip database
+  const filters = [];
+  Object.keys(USB_TABLE).forEach(vid => {
+    Object.keys(USB_TABLE[vid]).forEach(vname => {
+      Object.keys(USB_TABLE[vid][vname]).forEach(pid => {
+        filters.push({vendorId:parseInt(vid),productId:parseInt(pid)});
+      });
+    });
+  });
+
+  let dev, epIn, epOut, ifaceNum;
+
+  // Try known chips first, then any USB device
+  try {
+    dev = await navigator.usb.requestDevice({filters});
+  } catch(e) {
+    try { dev = await navigator.usb.requestDevice({filters:[{}]}); } catch(e2) {
+      throw Error('No device selected');
     }
-    await device.open(); await device.selectConfiguration(1);
-    // Find any bulk endpoint pair across all interfaces
-    let epOut=null, epIn=null, ifaceNum=0;
-    for (const iface of device.configuration.interfaces) {
-      for (const alt of iface.alternates) {
+  }
+
+  await dev.open();
+  if (dev.configuration === null) await dev.selectConfiguration(1);
+
+  // Find vendor-specific interface (class 0xFF) with bulk endpoints
+  for (const iface of dev.configuration.interfaces) {
+    for (const alt of iface.alternates) {
+      if (alt.interfaceClass === 0xFF) {
+        ifaceNum = iface.interfaceNumber;
         for (const ep of alt.endpoints) {
-          if (ep.direction==='out' && ep.type==='bulk') epOut=ep.endpointNumber;
-          if (ep.direction==='in' && ep.type==='bulk') epIn=ep.endpointNumber;
+          if (ep.direction==='out' && ep.type==='bulk') epOut = ep.endpointNumber;
+          if (ep.direction==='in' && ep.type==='bulk') epIn = ep.endpointNumber;
         }
       }
-      if (epOut && epIn) { ifaceNum=iface.interfaceNumber; break; }
     }
-    if (!epOut || !epIn) throw Error('No bulk endpoints found');
-    await device.claimInterface(ifaceNum);
+    if (epOut && epIn) break;
+  }
 
-    // CH340 init sequence (safe for other chips, just extra control xfers)
+  // If no vendor-specific interface, try all interfaces (CDC ACM, etc.)
+  if (!epOut || !epIn) {
+    for (const iface of dev.configuration.interfaces) {
+      for (const alt of iface.alternates) {
+        ifaceNum = iface.interfaceNumber;
+        for (const ep of alt.endpoints) {
+          if (!epOut && ep.direction==='out' && ep.type==='bulk') epOut = ep.endpointNumber;
+          if (!epIn && ep.direction==='in' && ep.type==='bulk') epIn = ep.endpointNumber;
+          if (epOut && epIn) break;
+        }
+      }
+      if (epOut && epIn) break;
+    }
+  }
+
+  if (!epOut || !epIn) throw Error('No bulk endpoints found on device');
+  
+  await dev.claimInterface(ifaceNum);
+  try { await dev.selectAlternateInterface(ifaceNum, 0); } catch(e) {}
+
+  // CH340 init
+  const chipName = (USB_TABLE[dev.vendorId]||{})[Object.keys(USB_TABLE[dev.vendorId]||{})[0]||'']?.[dev.productId]||'unknown';
+  const ct = async (dir,req,val,idx,len=0) => {
+    const d = len ? new DataView(new ArrayBuffer(len)) : new DataView(new ArrayBuffer(0));
+    await dev['controlTransfer'+(dir==='in'?'In':'Out')]({requestType:'vendor',recipient:'device',request:req,value:val,index:idx},d);
+  };
+  if (chipName === 'CH340' || chipName === 'CH341') {
     try {
-      const ct = async (dir,req,val,idx,len=0) => {
-        const d = len ? new DataView(new ArrayBuffer(len)) : new DataView(new ArrayBuffer(0));
-        await device['controlTransfer'+(dir==='in'?'In':'Out')]({requestType:'vendor',recipient:'device',request:req,value:val,index:idx},d);
-      };
       await ct('out',0xA1,0xC29C,0xB2B9);
       await ct('out',0xA4,0xDF,ifaceNum);
       await ct('out',0xA4,0x9F,ifaceNum);
@@ -212,32 +270,36 @@ async function createTransport() {
       await ct('out',0x9A,0x2518,0x00C3);
       await ct('in',0x95,0x0706,ifaceNum,2);
       await ct('out',0x9A,0x2727,ifaceNum);
-    } catch(e) { console.log('chip init:',e.message); }
-
-    return {
-      type:'webusb',
-      write: async bytes => { await device.transferOut(epOut,bytes); },
-      read: async timeoutMs => {
-        const deadline=performance.now()+timeoutMs; const buf=[];
-        while (performance.now()<deadline) {
-          const result = await Promise.race([
-            device.transferIn(epIn,64).then(r=>({data:r.data})),
-            wait(Math.max(1,deadline-performance.now())).then(()=>({timedOut:true}))
-          ]);
-          if (result.timedOut) break;
-          const arr = new Uint8Array(result.data.buffer);
-          for (const b of arr) { buf.push(b); if (b===ETX) return new Uint8Array(buf); }
-        }
-        if (buf.length>0) return new Uint8Array(buf);
-        throw Error('timeout');
-      },
-      drain: async () => {
-        try { await Promise.race([device.transferIn(epIn,64),wait(50).then(()=>({timedOut:true}))]); } catch(e) {}
-      },
-      close: async () => { try{ device.close(); }catch(e){} }
-    };
+    } catch(e) { console.log('CH340 init:',e.message); }
+  } else {
+    try { await ct('out',0xA1,0xC29C,0xB2B9); } catch(e) {}
   }
-  throw Error('No serial or USB API in this browser. Try Chrome/Edge.');
+
+  console.log('WebUSB connected:', chipName);
+  log(`WebUSB: ${chipName || dev.productName}`, 'ok');
+
+  return {
+    type:'webusb', chip:chipName,
+    write: async b => { await dev.transferOut(epOut,b); },
+    read: async t => {
+      const buf=[], dl=performance.now()+t;
+      while (performance.now()<dl) {
+        const res = await Promise.race([
+          dev.transferIn(epIn,64).then(r=>({data:r.data})),
+          wait(Math.max(1,dl-performance.now())).then(()=>({timedOut:true}))
+        ]);
+        if (res.timedOut) break;
+        const arr = new Uint8Array(res.data.buffer);
+        for (const b of arr) { buf.push(b); if (b===ETX) return new Uint8Array(buf); }
+      }
+      if (buf.length) return new Uint8Array(buf);
+      throw Error('timeout');
+    },
+    drain: async () => {
+      try { await Promise.race([dev.transferIn(epIn,64),wait(50).then(()=>({timedOut:true}))]); } catch(e) {}
+    },
+    close: async () => { try{ await dev.close(); }catch(e){} }
+  };
 }
 
 let transport=null,connected=false,busy=false;
