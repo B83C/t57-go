@@ -268,22 +268,8 @@ async function createWebUSBTransport() {
       await dev.controlTransferOut({requestType:'vendor',recipient:'device',request:req,value:val,index:idx}, d);
     }
   };
-  if (chipName === 'CH340' || chipName === 'CH341') {
-    try {
-      await ct('out',0xA1,0xC29C,0xB2B9);
-      await ct('out',0xA4,0xDF,ifaceNum);
-      await ct('out',0xA4,0x9F,ifaceNum);
-      await ct('in',0x95,0x0706,ifaceNum,2);
-      await ct('out',0x9A,0x2727,ifaceNum);
-      await ct('out',0x9A,0x1312,0xB282);
-      await ct('out',0x9A,0x0F2C,0x0008);
-      await ct('out',0x9A,0x2518,0x00C3);
-      await ct('in',0x95,0x0706,ifaceNum,2);
-      await ct('out',0x9A,0x2727,ifaceNum);
-    } catch(e) { console.log('CH340 init:',e.message); }
-  } else {
-    try { await ct('out',0xA1,0xC29C,0xB2B9); } catch(e) {}
-  }
+  // Minimal init — no CH340 control transfers needed at 9600 default
+  try { await ct('out',0xA4,0xDF,ifaceNum); } catch(e) { console.log('modem on fail:',e.message); }
 
   console.log('WebUSB connected:', chipName);
   log(`WebUSB: ${chipName || dev.productName}`, 'ok');
