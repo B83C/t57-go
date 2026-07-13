@@ -295,9 +295,7 @@ async function createWebUSBTransport() {
       if (buf.length) return new Uint8Array(buf);
       throw Error('timeout');
     },
-    drain: async () => {
-      try { await Promise.race([dev.transferIn(epIn,64),wait(50).then(()=>({timedOut:true}))]); } catch(e) {}
-    },
+    drain: async () => {},
     close: async () => { try{ await dev.close(); }catch(e){} }
   };
 }
